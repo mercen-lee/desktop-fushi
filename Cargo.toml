@@ -1,0 +1,74 @@
+[package]
+name = "desktop-fushi"
+version = "0.1.0"
+edition = "2021"
+authors = ["Mercen & Rian"]
+description = "Desktop Fushi desktop pet"
+homepage = "https://desktopfushi.mercen.net"
+license = "MIT"
+
+[features]
+default = []
+web = [
+    "dep:console_error_panic_hook",
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "wgpu/webgl",
+    "wgpu/webgpu",
+]
+
+[lib]
+name = "desktop_fushi"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+pollster = "0.4.0"
+raw-window-handle = "0.6"
+lyon = "1"
+wgpu = "29.0.3"
+bytemuck = { version = "1", features = ["derive"] }
+
+[target.'cfg(all(not(target_os = "android"), not(target_arch = "wasm32")))'.dependencies]
+tao = "0.35.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSScreen", "NSWindow"] }
+png = "0.18.1"
+tray-icon = "0.23.1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+android_logger = "0.14"
+log = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = { version = "0.1", optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", features = ["console", "HtmlCanvasElement"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.23.1"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging"
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+panic = "abort"
+strip = "symbols"

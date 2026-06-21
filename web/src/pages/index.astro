@@ -1,0 +1,771 @@
+---
+const version = import.meta.env.PUBLIC_DESKTOP_FUSHI_VERSION ?? "0.1.0";
+const tag = `v${version}`;
+const siteUrl = "https://desktopfushi.mercen.net";
+const canonicalUrl = `${siteUrl}/`;
+const pageTitle = "Desktop Fushi - Transparent Desktop Pet for Windows and macOS";
+const pageDescription =
+  "Download Desktop Fushi, a tiny transparent desktop pet for Windows and macOS with interactive physics, expressions, and a GPU-rendered Fushi companion.";
+const ogImagePath = "/desktop-fushi-og.png";
+const ogImageUrl = `${siteUrl}${ogImagePath}`;
+const releaseBase = `https://github.com/mercen-lee/desktop-fushi/releases/download/${tag}`;
+const repositoryUrl = "https://github.com/mercen-lee/desktop-fushi";
+
+const platforms = [
+  {
+    key: "windows-x64",
+    label: "Windows x64",
+    meta: "Intel and AMD PCs",
+    icon: "windows",
+    fileName: `desktop-fushi-v${version}-windows-x64.zip`,
+  },
+  {
+    key: "windows-arm64",
+    label: "Windows on ARM",
+    meta: "Snapdragon and ARM64 PCs",
+    icon: "windows",
+    fileName: `desktop-fushi-v${version}-windows-arm64.zip`,
+  },
+  {
+    key: "macos-arm64",
+    label: "macOS Apple Silicon",
+    meta: "M1, M2, M3, and newer",
+    icon: "apple",
+    fileName: `desktop-fushi-v${version}-macos-arm64.zip`,
+  },
+  {
+    key: "macos-universal",
+    label: "macOS Universal",
+    meta: "Apple Silicon and Intel",
+    icon: "apple",
+    fileName: `desktop-fushi-v${version}-macos-universal.zip`,
+  },
+].map((platform) => ({
+  ...platform,
+  href: `${releaseBase}/${platform.fileName}`,
+}));
+
+const releaseData = { version, tag, platforms };
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Desktop Fushi",
+  description: pageDescription,
+  url: canonicalUrl,
+  image: ogImageUrl,
+  applicationCategory: "EntertainmentApplication",
+  operatingSystem: "Windows, macOS",
+  softwareVersion: version,
+  isAccessibleForFree: true,
+  license: `${repositoryUrl}/blob/main/LICENSE`,
+  author: {
+    "@type": "Organization",
+    name: "Mercen & Rian",
+  },
+  offers: {
+    "@type": "Offer",
+    price: "0",
+    priceCurrency: "USD",
+  },
+  sameAs: [repositoryUrl],
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={pageDescription} />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <meta name="author" content="Mercen & Rian" />
+    <meta name="theme-color" content="#f6f2e8" />
+    <link rel="canonical" href={canonicalUrl} />
+    <meta property="og:site_name" content="Desktop Fushi" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDescription} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:secure_url" content={ogImageUrl} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Desktop Fushi character preview." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={pageDescription} />
+    <meta name="twitter:image" content={ogImageUrl} />
+    <meta name="twitter:image:alt" content="Desktop Fushi character preview." />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <script type="application/ld+json" set:html={JSON.stringify(structuredData)}></script>
+    <script is:inline async src="https://www.googletagmanager.com/gtag/js?id=G-9EE4C6413D"></script>
+    <script is:inline>
+      window.dataLayer = window.dataLayer || [];
+      window.gtag = function gtag() {
+        window.dataLayer.push(arguments);
+      };
+      window.gtag("js", new Date());
+      window.gtag("config", "G-9EE4C6413D");
+    </script>
+  </head>
+  <body>
+    <main class="stage" data-fushi-stage data-loading="true" aria-busy="true">
+      <canvas id="fushi-canvas" aria-label="Desktop Fushi"></canvas>
+      <img class="fallback-fushi" src="/desktop-fushi.png" alt="" />
+      <a
+        class="github-link"
+        href={repositoryUrl}
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Open Desktop Fushi on GitHub"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 .5C5.7.5.7 5.6.7 11.8c0 5 3.3 9.3 7.9 10.8.6.1.8-.2.8-.6v-2.2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 .1.7 2.1 2.8 1.5.1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.6 0-1.2.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2.9-.3 1.9-.4 2.9-.4s2 .1 2.9.4c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.9 1.2 1.9 1.2 3.1 0 4.4-2.7 5.3-5.3 5.6.4.4.8 1.1.8 2.2V22c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.8C23.3 5.6 18.3.5 12 .5Z" />
+        </svg>
+      </a>
+
+      <section class="loading-screen" aria-label="Loading" aria-live="polite">
+        <div class="loading-mark" aria-hidden="true">
+          <span class="loading-ring"></span>
+          <img class="loading-fushi" src="/desktop-fushi.png" alt="" />
+        </div>
+        <p class="loading-kicker">Loading</p>
+      </section>
+
+      <section class="brand" aria-label="Desktop Fushi">
+        <h1>Desktop Fushi</h1>
+        <p class="credits">Made by Mercen &amp; Rian</p>
+      </section>
+
+      <section class="download-panel" data-download-panel aria-label="Download Desktop Fushi">
+        <div class="platform-picker" data-platform-picker>
+          <button
+            class="platform-button"
+            type="button"
+            data-platform-button
+            aria-haspopup="listbox"
+            aria-expanded="false"
+          >
+            <span class="platform-icon" data-selected-icon aria-hidden="true"></span>
+            <span class="platform-copy">
+              <span class="platform-label" data-selected-label>Windows x64</span>
+              <span class="platform-meta" data-selected-meta>Intel and AMD PCs</span>
+            </span>
+            <span class="chevron" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </span>
+          </button>
+
+          <div class="platform-menu" data-platform-menu role="listbox" hidden>
+            {
+              platforms.map((platform) => (
+                <button
+                  class="platform-option"
+                  type="button"
+                  role="option"
+                  data-platform-option={platform.key}
+                  aria-selected="false"
+                >
+                  <span class={`option-icon option-icon-${platform.icon}`} aria-hidden="true">
+                    {platform.icon === "windows" && (
+                      <svg viewBox="0 0 24 24">
+                        <path d="M3 5.1 10.7 4v7.4H3V5.1Zm0 7.5h7.7V20L3 18.9v-6.3Zm8.9-8.8L21 2.5v8.9h-9.1V3.8Zm0 8.8H21v8.9l-9.1-1.3v-7.6Z" />
+                      </svg>
+                    )}
+                    {platform.icon === "apple" && (
+                      <svg viewBox="0 0 24 24">
+                        <path d="M16.8 13.1c0-2.2 1.8-3.2 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8s-1.8-.8-2.9-.8c-1.5 0-2.9.9-3.7 2.2-1.6 2.8-.4 6.9 1.1 9.1.8 1.1 1.7 2.3 2.9 2.3 1.1 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2.1-1.1 2.8-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.7-1-2.8-3.8ZM14.6 6.6c.6-.7 1-1.8.9-2.8-.9 0-2 .6-2.7 1.3-.6.7-1 1.7-.9 2.7 1 0 2-.5 2.7-1.2Z" />
+                      </svg>
+                    )}
+                  </span>
+                  <span>
+                    <span class="option-label">{platform.label}</span>
+                    <span class="option-meta">{platform.meta}</span>
+                  </span>
+                </button>
+              ))
+            }
+          </div>
+        </div>
+
+        <a class="download-button" href={platforms[0].href} data-download-link>
+          Download
+        </a>
+
+        <p class="platform-status" data-platform-status hidden></p>
+      </section>
+
+      <p class="legal-note">Desktop Fushi is an unofficial fan project. Character copyright belongs to TWIN ENGINE.</p>
+    </main>
+
+    <script id="release-data" type="application/json" set:html={JSON.stringify(releaseData)}></script>
+    <script>
+      import "../scripts/fushi-stage.js";
+    </script>
+  </body>
+</html>
+
+<style>
+  @font-face {
+    font-family: "Google Sans Flex";
+    font-style: normal;
+    font-weight: 1 1000;
+    font-display: swap;
+    src: url("/fonts/GoogleSansFlex-Variable.woff2") format("woff2");
+  }
+
+  :root {
+    color-scheme: light;
+    font-family:
+      "Google Sans Flex", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f6f2e8;
+    color: #21222b;
+    letter-spacing: 0;
+    --motion-duration: 180ms;
+    --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    min-width: 320px;
+  }
+
+  button,
+  a {
+    font: inherit;
+  }
+
+  .stage {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: #f6f2e8;
+  }
+
+  #fushi-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #f6f2e8;
+    touch-action: none;
+    cursor: default;
+    z-index: 1;
+  }
+
+  .stage[data-fushi-hit="true"] #fushi-canvas {
+    cursor: grab;
+  }
+
+  .stage[data-fushi-grabbing="true"] #fushi-canvas {
+    cursor: grabbing;
+  }
+
+  .github-link {
+    position: absolute;
+    top: max(14px, env(safe-area-inset-top));
+    right: max(14px, env(safe-area-inset-right));
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid rgba(176, 171, 155, 0.42);
+    border-radius: 8px;
+    background: rgba(255, 253, 247, 0.86);
+    color: #3a3b43;
+    box-shadow: 0 12px 28px rgba(184, 170, 161, 0.18);
+    transition:
+      background-color var(--motion-duration) ease,
+      border-color var(--motion-duration) ease,
+      color var(--motion-duration) ease,
+      transform var(--motion-duration) ease;
+  }
+
+  .github-link:hover {
+    border-color: rgba(255, 148, 154, 0.52);
+    background: rgba(255, 248, 240, 0.96);
+    color: #6f4d5d;
+    transform: translateY(-1px);
+  }
+
+  .github-link svg {
+    width: 19px;
+    height: 19px;
+    fill: currentColor;
+  }
+
+  .fallback-fushi {
+    position: absolute;
+    left: 50%;
+    top: 44%;
+    width: min(42vw, 340px);
+    max-width: calc(100vw - 48px);
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .stage[data-failed="true"] .fallback-fushi {
+    opacity: 1;
+  }
+
+  .loading-screen {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 10px;
+    padding: 24px;
+    background:
+      radial-gradient(circle at 50% 42%, rgba(255, 248, 232, 0.96), rgba(246, 242, 232, 0.86) 34%, rgba(246, 242, 232, 0.72) 66%),
+      #f6f2e8;
+    opacity: 1;
+    text-align: center;
+    transition:
+      opacity 240ms ease,
+      visibility 240ms ease;
+  }
+
+  .stage[data-ready="true"] .loading-screen,
+  .stage[data-failed="true"] .loading-screen {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .loading-mark {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 116px;
+    height: 116px;
+  }
+
+  .loading-ring {
+    position: absolute;
+    inset: 0;
+    border: 2px solid rgba(33, 34, 43, 0.14);
+    border-top-color: #5f626a;
+    border-radius: 50%;
+    animation: loading-spin 960ms linear infinite;
+  }
+
+  .loading-fushi {
+    width: 82px;
+    height: 82px;
+    object-fit: contain;
+    animation: loading-breathe 1400ms ease-in-out infinite;
+  }
+
+  .loading-kicker {
+    margin: 0;
+  }
+
+  .loading-kicker {
+    color: #5f626a;
+    font-size: 0.78rem;
+    font-weight: 760;
+    text-transform: uppercase;
+  }
+
+  @keyframes loading-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes loading-breathe {
+    0%,
+    100% {
+      transform: scale(0.96);
+    }
+
+    50% {
+      transform: scale(1.02);
+    }
+  }
+
+  @keyframes menu-reveal {
+    from {
+      opacity: 0;
+      filter: blur(8px);
+      transform: scale(0.985);
+    }
+
+    to {
+      opacity: 1;
+      filter: blur(0);
+      transform: scale(1);
+    }
+  }
+
+  .brand {
+    position: absolute;
+    left: 50%;
+    top: max(22px, calc(50% - min(38vh, 360px)));
+    width: min(calc(100vw - 40px), 720px);
+    transform: translateX(-50%);
+    z-index: 2;
+    pointer-events: auto;
+    text-align: center;
+  }
+
+  .credits {
+    margin: 10px 0 0;
+    color: #5f626a;
+    font-size: clamp(0.86rem, 2.2vw, 1rem);
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  h1 {
+    margin: 0;
+    color: #21222b;
+    font-size: clamp(2rem, 6vw, 4.8rem);
+    line-height: 0.94;
+    font-weight: 850;
+  }
+
+  .download-panel {
+    position: absolute;
+    left: 50%;
+    top: calc(50% + min(23vh, 250px));
+    transform: translateX(-50%);
+    z-index: 3;
+    display: grid;
+    grid-template-columns: minmax(0, 320px) 148px;
+    gap: 10px;
+    width: min(calc(100vw - 32px), 486px);
+    align-items: stretch;
+  }
+
+  .platform-picker {
+    position: relative;
+    min-width: 0;
+  }
+
+  .platform-button,
+  .download-button,
+  .platform-option {
+    border: 1px solid rgba(176, 171, 155, 0.46);
+    border-radius: 8px;
+    background: rgba(255, 253, 247, 0.92);
+    color: #21222b;
+    box-shadow: 0 16px 36px rgba(184, 170, 161, 0.20);
+    transition:
+      background-color var(--motion-duration) ease,
+      border-color var(--motion-duration) ease,
+      box-shadow 220ms ease,
+      color var(--motion-duration) ease,
+      filter var(--motion-duration) ease,
+      opacity var(--motion-duration) ease;
+  }
+
+  .platform-button {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) 24px;
+    gap: 10px;
+    align-items: center;
+    width: 100%;
+    height: 58px;
+    padding: 8px 10px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .platform-button:hover,
+  .platform-button[aria-expanded="true"] {
+    border-color: rgba(255, 148, 154, 0.54);
+    background: rgba(255, 248, 240, 0.98);
+    box-shadow: 0 16px 36px rgba(184, 170, 161, 0.26);
+  }
+
+  .platform-button:active {
+    background: rgba(255, 239, 232, 0.98);
+  }
+
+  .platform-icon,
+  .option-icon {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: #f0e5df;
+    color: #5f5963;
+    transition:
+      background-color var(--motion-duration) ease,
+      color var(--motion-duration) ease,
+      filter var(--motion-duration) ease,
+      opacity var(--motion-duration) ease;
+  }
+
+  .platform-button:hover .platform-icon,
+  .platform-button[aria-expanded="true"] .platform-icon,
+  .platform-option:hover .option-icon {
+    background: #ffe1e4;
+    color: #6f4d5d;
+    filter: contrast(1.04);
+  }
+
+  .platform-icon :global(svg),
+  .option-icon svg {
+    width: 22px;
+    height: 22px;
+    fill: currentColor;
+  }
+
+  .platform-copy,
+  .platform-option span:last-child {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .platform-label,
+  .option-label {
+    overflow: hidden;
+    color: #21222b;
+    font-size: 0.96rem;
+    font-weight: 760;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .platform-meta,
+  .option-meta {
+    overflow: hidden;
+    color: #7f786c;
+    font-size: 0.74rem;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chevron {
+    display: grid;
+    place-items: center;
+    color: #8d8178;
+    transition: color var(--motion-duration) ease, opacity var(--motion-duration) ease;
+  }
+
+  .platform-button[aria-expanded="true"] .chevron {
+    color: #6f4d5d;
+  }
+
+  .chevron svg {
+    width: 21px;
+    height: 21px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.2;
+  }
+
+  .download-button {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    height: 58px;
+    padding: 0 18px;
+    background: #5f5963;
+    color: #fffdf7;
+    font-size: 0.98rem;
+    font-weight: 800;
+    text-decoration: none;
+    overflow: hidden;
+  }
+
+  .download-button:hover {
+    background: #6f4d5d;
+    color: #fffdf7;
+    box-shadow: 0 16px 36px rgba(184, 170, 161, 0.30);
+  }
+
+  .download-button:active {
+    background: #4e4654;
+    opacity: 0.92;
+  }
+
+  .platform-status {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid rgba(176, 171, 155, 0.42);
+    border-radius: 8px;
+    background: rgba(255, 253, 247, 0.86);
+    color: #6f4d5d;
+    box-shadow: 0 12px 28px rgba(184, 170, 161, 0.16);
+    font-size: 0.73rem;
+    font-weight: 720;
+    line-height: 1.28;
+    text-align: center;
+  }
+
+  .platform-status[hidden] {
+    display: none;
+  }
+
+  .platform-menu {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 8px);
+    display: grid;
+    gap: 6px;
+    padding: 6px;
+    border: 1px solid rgba(176, 171, 155, 0.46);
+    border-radius: 8px;
+    background: rgba(255, 253, 247, 0.98);
+    box-shadow: 0 20px 46px rgba(184, 170, 161, 0.26);
+    transform-origin: bottom center;
+    animation: menu-reveal 180ms var(--motion-ease) both;
+    will-change: opacity, filter, transform;
+  }
+
+  .platform-menu[hidden] {
+    display: none;
+  }
+
+  .platform-option {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    min-height: 50px;
+    padding: 7px 8px;
+    box-shadow: none;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .platform-option[aria-selected="true"] {
+    border-color: rgba(255, 148, 154, 0.56);
+    background: #fff0ef;
+  }
+
+  .platform-option:hover {
+    border-color: rgba(255, 148, 154, 0.46);
+    background: #fff8f0;
+  }
+
+  .platform-option:active {
+    background: #ffeae4;
+  }
+
+  .legal-note {
+    position: absolute;
+    left: 50%;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    z-index: 2;
+    width: min(calc(100vw - 12px), 860px);
+    margin: 0;
+    transform: translateX(-50%);
+    color: rgba(33, 34, 43, 0.56);
+    font-size: clamp(0.48rem, 1.7vw, 0.66rem);
+    font-weight: 600;
+    line-height: 1.15;
+    text-align: center;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .platform-button:focus-visible,
+  .download-button:focus-visible,
+  .platform-option:focus-visible,
+  .github-link:focus-visible {
+    outline: 3px solid rgba(255, 148, 154, 0.42);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 560px) {
+    .brand {
+      left: 50%;
+      top: max(18px, calc(50% - min(40vh, 260px)));
+    }
+
+    .download-panel {
+      grid-template-columns: 1fr;
+      top: calc(50% + min(23vh, 178px));
+      width: min(calc(100vw - 24px), 390px);
+    }
+
+    .download-button,
+    .platform-button {
+      height: 54px;
+    }
+
+    .legal-note {
+      bottom: max(5px, env(safe-area-inset-bottom));
+      width: min(calc(100vw - 6px), 860px);
+      font-size: clamp(0.38rem, 1.85vw, 0.54rem);
+    }
+
+    .github-link {
+      top: max(10px, env(safe-area-inset-top));
+      right: max(10px, env(safe-area-inset-right));
+      width: 34px;
+      height: 34px;
+    }
+  }
+
+  @media (max-height: 520px) {
+    .brand {
+      top: 14px;
+    }
+
+    h1 {
+      font-size: clamp(1.6rem, 5vw, 2.8rem);
+    }
+
+    .download-panel {
+      top: auto;
+      bottom: 38px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .loading-screen {
+      transition: none;
+    }
+
+    .platform-button,
+    .download-button,
+    .platform-option,
+    .platform-icon,
+    .option-icon,
+    .chevron {
+      transition: none;
+    }
+
+    .platform-menu {
+      animation: none;
+    }
+
+    .loading-ring,
+    .loading-fushi {
+      animation: none;
+    }
+  }
+</style>

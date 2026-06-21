@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Pocket Fushi</string>
+    <string name="overlay_notification_title">Pocket Fushi is floating</string>
+    <string name="overlay_notification_text">Shake your phone and Fushi reacts like it is wobbling inside a container.</string>
+</resources>

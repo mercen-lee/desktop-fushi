@@ -1,0 +1,75 @@
+# Rust build outputs
+/target/
+
+# Rust
+*.rs.bk
+
+# Packaged artifacts
+/dist/
+/release/
+/*.zip
+/*.tar.gz
+/*.dmg
+/*.pkg
+/*.msi
+/*.exe
+/*.app/
+/web/dist/
+/web/.astro/
+/web/.vercel/
+/web/node_modules/
+/web/src/generated/
+/.node/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.dSYM/
+*.pdb
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Android local config
+/android/local.properties
+/android/key.properties
+/android/app/key.properties
+
+# Android build outputs
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/app/debug/
+/android/app/release/
+/android/app/.cxx/
+/android/app/.externalNativeBuild/
+/android/app/src/main/jniLibs/
+/android/captures/
+*.apk
+*.ap_
+*.aab
+*.idsig
+*.hprof
+
+# Android signing material
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# Python build-script caches
+__pycache__/
+*.pyc
