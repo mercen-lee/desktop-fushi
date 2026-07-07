@@ -14,6 +14,9 @@ use crate::wgpu_layer::{WgpuLayer, WgpuSurfaceSize};
 const FAR_CURSOR: Vec2 = Vec2::new(-10000.0, -10000.0);
 const DEFAULT_DPR: f32 = 1.0;
 const WEB_DRAG_RADIUS_SCALE: f32 = 0.58;
+const WEB_FUSHI_RENDER_WIDTH_RATIO: f32 = 2.55;
+const WEB_EMBED_MIN_SCALE: f32 = 0.20;
+const WEB_EMBED_MAX_SCALE: f32 = 1.38;
 
 #[wasm_bindgen]
 pub struct WebFushiEngine {
@@ -28,6 +31,7 @@ pub struct WebFushiEngine {
     pointer_down: bool,
     ui_rects: Vec<(isize, RectI)>,
     showcase_anchor: Vec2,
+    showcase_mode: bool,
 }
 
 #[wasm_bindgen]
@@ -40,42 +44,18 @@ impl WebFushiEngine {
         dpr: f32,
         _showcase_line: f32,
     ) -> Result<WebFushiEngine, JsValue> {
-        console_error_panic_hook::set_once();
+        Self::new(canvas, width, height, dpr, true).await
+    }
 
-        let width = width.max(1);
-        let height = height.max(1);
-        let dpr = dpr.max(DEFAULT_DPR);
-        let env = DesktopEnvironment::from_screen_size(width as i32, height as i32);
-        let mut fushi = FushiBody::new(&env);
-        fushi.set_scale(web_fushi_scale(width, height, dpr), &env);
-        fushi.snap_to_contact(
-            SurfaceContact::monitor(0, SurfaceKind::Bottom),
-            width as f32 * 0.5,
-            &env,
-        );
-        fushi.set_cursor(FAR_CURSOR);
-
-        let wgpu = WgpuLayer::new_for_canvas(canvas, WgpuSurfaceSize::new(width, height))
-            .await
-            .map_err(|err| JsValue::from_str(&err))?;
-
-        let mut engine = WebFushiEngine {
-            env,
-            fushi,
-            renderer: FushiRenderer::new(),
-            wgpu,
-            width,
-            height,
-            dpr,
-            awakened: true,
-            pointer_down: false,
-            ui_rects: Vec::new(),
-            showcase_anchor: Vec2::ZERO,
-        };
-        engine.showcase_anchor = engine.compute_showcase_anchor();
-        engine.pin_to_showcase_anchor();
-        engine.render();
-        Ok(engine)
+    #[wasm_bindgen(js_name = createDesktop)]
+    pub async fn create_desktop(
+        canvas: HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        dpr: f32,
+        _showcase_line: f32,
+    ) -> Result<WebFushiEngine, JsValue> {
+        Self::new(canvas, width, height, dpr, false).await
     }
 
     pub fn resize(&mut self, width: u32, height: u32, dpr: f32, _showcase_line: f32) {
@@ -85,7 +65,12 @@ impl WebFushiEngine {
         self.wgpu.resize(self.width, self.height);
         self.showcase_anchor = self.compute_showcase_anchor();
         self.env = self.viewport_environment();
-        self.pin_to_showcase_anchor();
+        self.set_responsive_scale();
+        if self.showcase_mode {
+            self.pin_to_showcase_anchor();
+        } else if !self.env.virtual_bounds.inflate(900).contains(self.fushi.center) {
+            self.fushi.reset_to_safe_surface(&self.env);
+        }
     }
 
     pub fn pointer(&mut self, x: f32, y: f32, down: bool) -> bool {
@@ -97,7 +82,7 @@ impl WebFushiEngine {
                 return false;
             }
             self.awaken();
-            let target = self.clamped_interaction_point(world);
+            let target = self.interaction_point(world);
             if self.pointer_down {
                 self.fushi.drag_to(target);
             } else if self.fushi.try_begin_drag(world) {
@@ -105,7 +90,7 @@ impl WebFushiEngine {
             }
             self.fushi.set_cursor(target);
         } else if self.awakened {
-            let target = self.clamped_interaction_point(world);
+            let target = self.interaction_point(world);
             self.fushi.drag_to(target);
             self.fushi.release_drag();
             self.fushi.set_cursor(target);
@@ -171,19 +156,71 @@ impl WebFushiEngine {
         let intensity = smoothstep(900.0, 3900.0, accel.length());
         if intensity > 0.002 {
             self.fushi.apply_external_shake(accel, intensity, dt);
-            self.pin_to_showcase_anchor();
+            if self.showcase_mode {
+                self.pin_to_showcase_anchor();
+            }
         }
     }
 
     pub fn tick(&mut self, dt: f32) {
         let _dt = dt.clamp(0.001, 0.050);
         self.fushi.step(_dt, &self.env);
-        self.pin_to_showcase_anchor();
+        if self.showcase_mode {
+            self.pin_to_showcase_anchor();
+        }
         self.render();
     }
 }
 
 impl WebFushiEngine {
+    async fn new(
+        canvas: HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        dpr: f32,
+        showcase_mode: bool,
+    ) -> Result<WebFushiEngine, JsValue> {
+        console_error_panic_hook::set_once();
+
+        let width = width.max(1);
+        let height = height.max(1);
+        let dpr = dpr.max(DEFAULT_DPR);
+        let env = DesktopEnvironment::from_screen_size(width as i32, height as i32);
+        let mut fushi = FushiBody::new(&env);
+        set_web_fushi_scale(&mut fushi, width, height, dpr, showcase_mode, &env);
+        fushi.snap_to_contact(
+            SurfaceContact::monitor(0, SurfaceKind::Bottom),
+            width as f32 * 0.5,
+            &env,
+        );
+        fushi.set_cursor(FAR_CURSOR);
+
+        let wgpu = WgpuLayer::new_for_canvas(canvas, WgpuSurfaceSize::new(width, height))
+            .await
+            .map_err(|err| JsValue::from_str(&err))?;
+
+        let mut engine = WebFushiEngine {
+            env,
+            fushi,
+            renderer: FushiRenderer::new(),
+            wgpu,
+            width,
+            height,
+            dpr,
+            awakened: true,
+            pointer_down: false,
+            ui_rects: Vec::new(),
+            showcase_anchor: Vec2::ZERO,
+            showcase_mode,
+        };
+        engine.showcase_anchor = engine.compute_showcase_anchor();
+        if engine.showcase_mode {
+            engine.pin_to_showcase_anchor();
+        }
+        engine.render();
+        Ok(engine)
+    }
+
     fn awaken(&mut self) {
         if self.awakened {
             return;
@@ -191,13 +228,15 @@ impl WebFushiEngine {
         self.awakened = true;
         self.env = self.viewport_environment();
         self.fushi.set_cursor(FAR_CURSOR);
-        self.pin_to_showcase_anchor();
+        if self.showcase_mode {
+            self.pin_to_showcase_anchor();
+        }
     }
 
     fn render(&mut self) {
         let mut canvas = GpuCanvas::new(self.width, self.height, Vec2::ZERO, 1.0);
         let mut render_fushi = self.fushi.clone();
-        if render_fushi.mode == MotionMode::Flying {
+        if self.showcase_mode && render_fushi.mode == MotionMode::Flying {
             render_fushi.mode = MotionMode::Attached;
         }
         self.renderer.draw(&mut canvas, &render_fushi);
@@ -215,6 +254,25 @@ impl WebFushiEngine {
 
     fn compute_showcase_anchor(&self) -> Vec2 {
         Vec2::new(self.width as f32 * 0.5, self.height as f32 * 0.54)
+    }
+
+    fn set_responsive_scale(&mut self) {
+        set_web_fushi_scale(
+            &mut self.fushi,
+            self.width,
+            self.height,
+            self.dpr,
+            self.showcase_mode,
+            &self.env,
+        );
+    }
+
+    fn interaction_point(&self, world: Vec2) -> Vec2 {
+        if self.showcase_mode {
+            self.clamped_interaction_point(world)
+        } else {
+            world
+        }
     }
 
     fn clamped_interaction_point(&self, world: Vec2) -> Vec2 {
@@ -239,10 +297,42 @@ impl WebFushiEngine {
 }
 
 fn web_fushi_scale(width: u32, height: u32, dpr: f32) -> f32 {
+    web_fushi_scale_for_mode(width, height, dpr, true)
+}
+
+fn web_embed_fushi_scale(width: u32, height: u32, dpr: f32) -> f32 {
+    web_fushi_scale_for_mode(width, height, dpr, false)
+}
+
+fn web_fushi_scale_for_mode(width: u32, height: u32, dpr: f32, showcase_mode: bool) -> f32 {
     let css_width = width as f32 / dpr.max(DEFAULT_DPR);
     let css_height = height as f32 / dpr.max(DEFAULT_DPR);
-    let target_css_width = clampf(css_width.min(css_height * 1.62) * 0.72, 180.0, 360.0);
-    clampf(target_css_width * dpr / (BODY_HALF_LENGTH * 2.55), 0.46, 2.2)
+    let target_css_width = if showcase_mode {
+        clampf(css_width.min(css_height * 1.62) * 0.72, 180.0, 360.0)
+    } else {
+        clampf(css_width.min(css_height * 1.90) * 0.36, 72.0, 560.0)
+    };
+    target_css_width * dpr / (BODY_HALF_LENGTH * WEB_FUSHI_RENDER_WIDTH_RATIO)
+}
+
+fn set_web_fushi_scale(
+    fushi: &mut FushiBody,
+    width: u32,
+    height: u32,
+    dpr: f32,
+    showcase_mode: bool,
+    env: &DesktopEnvironment,
+) {
+    if showcase_mode {
+        fushi.set_scale(web_fushi_scale(width, height, dpr), env);
+    } else {
+        fushi.set_scale_with_limits(
+            web_embed_fushi_scale(width, height, dpr),
+            WEB_EMBED_MIN_SCALE,
+            WEB_EMBED_MAX_SCALE,
+            env,
+        );
+    }
 }
 
 fn web_log(message: &str) {

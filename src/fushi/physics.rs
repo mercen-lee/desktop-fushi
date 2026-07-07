@@ -308,7 +308,19 @@ impl FushiBody {
     }
 
     pub fn set_scale(&mut self, scale: f32, env: &DesktopEnvironment) {
-        let scale = clampf(scale, 0.48, 2.80);
+        self.set_scale_with_limits(scale, 0.48, 2.80, env);
+    }
+
+    pub fn set_scale_with_limits(
+        &mut self,
+        scale: f32,
+        min_scale: f32,
+        max_scale: f32,
+        env: &DesktopEnvironment,
+    ) {
+        let min_scale = min_scale.clamp(0.20, 2.80);
+        let max_scale = max_scale.max(min_scale).min(2.80);
+        let scale = clampf(scale, min_scale, max_scale);
         if (self.scale - scale).abs() <= 0.001 {
             return;
         }

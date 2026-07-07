@@ -1,0 +1,206 @@
+---
+const siteUrl = "https://desktopfushi.mercen.net";
+const canonicalUrl = `${siteUrl}/embed`;
+const pageTitle = "Desktop Fushi Embed";
+const pageDescription = "An embeddable WebGPU Desktop Fushi experience.";
+const ogImageUrl = `${siteUrl}/desktop-fushi-og.png`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={pageDescription} />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <meta name="theme-color" content="#f6f2e8" />
+    <link rel="canonical" href={canonicalUrl} />
+    <meta property="og:site_name" content="Desktop Fushi" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDescription} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={pageDescription} />
+    <meta name="twitter:image" content={ogImageUrl} />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+  </head>
+  <body>
+    <main class="embed-stage" data-fushi-embed data-loading="true" aria-busy="true">
+      <canvas id="fushi-canvas" aria-label="Interactive Desktop Fushi"></canvas>
+      <img class="fallback-fushi" src="/desktop-fushi.png" alt="" />
+
+      <section class="loading-screen" aria-label="Loading" aria-live="polite">
+        <div class="loading-mark" aria-hidden="true">
+          <span class="loading-ring"></span>
+          <img class="loading-fushi" src="/desktop-fushi.png" alt="" />
+        </div>
+      </section>
+    </main>
+
+    <script>
+      import "../scripts/fushi-embed.js";
+    </script>
+  </body>
+</html>
+
+<style>
+  @font-face {
+    font-family: "Google Sans Flex";
+    font-style: normal;
+    font-weight: 1 1000;
+    font-display: swap;
+    src: url("/fonts/GoogleSansFlex-Variable.woff2") format("woff2");
+  }
+
+  :root {
+    color-scheme: light;
+    font-family:
+      "Google Sans Flex", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f6f2e8;
+    color: #21222b;
+    letter-spacing: 0;
+    --motion-duration: 180ms;
+    --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    min-width: 160px;
+  }
+
+  .embed-stage {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: #f6f2e8;
+    isolation: isolate;
+  }
+
+  #fushi-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: #f6f2e8;
+    cursor: default;
+    touch-action: none;
+  }
+
+  .embed-stage[data-fushi-hit="true"] #fushi-canvas {
+    cursor: grab;
+  }
+
+  .embed-stage[data-fushi-grabbing="true"] #fushi-canvas {
+    cursor: grabbing;
+  }
+
+  .fallback-fushi {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    z-index: 1;
+    width: min(72vw, 72vh, 320px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    object-fit: contain;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+  }
+
+  .embed-stage[data-failed="true"] #fushi-canvas {
+    opacity: 0;
+  }
+
+  .embed-stage[data-failed="true"] .fallback-fushi {
+    opacity: 1;
+  }
+
+  .loading-screen {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: #f6f2e8;
+    opacity: 1;
+    transition:
+      opacity 240ms ease,
+      visibility 240ms ease;
+  }
+
+  .embed-stage[data-ready="true"] .loading-screen,
+  .embed-stage[data-failed="true"] .loading-screen {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .loading-mark {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 96px;
+    height: 96px;
+  }
+
+  .loading-ring {
+    position: absolute;
+    inset: 0;
+    border: 2px solid rgba(33, 34, 43, 0.14);
+    border-top-color: #5f626a;
+    border-radius: 50%;
+    animation: loading-spin 960ms linear infinite;
+  }
+
+  .loading-fushi {
+    width: 68px;
+    height: 68px;
+    object-fit: contain;
+    animation: loading-breathe 1400ms ease-in-out infinite;
+  }
+
+  @keyframes loading-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes loading-breathe {
+    0%,
+    100% {
+      transform: scale(0.96);
+    }
+
+    50% {
+      transform: scale(1.02);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .loading-screen {
+      transition: none;
+    }
+
+    .loading-ring,
+    .loading-fushi {
+      animation: none;
+    }
+  }
+</style>
