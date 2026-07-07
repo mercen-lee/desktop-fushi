@@ -3,6 +3,8 @@ name: CI/CD Release
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
@@ -77,6 +79,7 @@ jobs:
     name: Windows ${{ matrix.arch }}
     needs: prepare
     runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     strategy:
       fail-fast: false
       matrix:
@@ -142,6 +145,7 @@ jobs:
     name: macOS arm64 and universal
     needs: prepare
     runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -209,6 +213,7 @@ jobs:
       - windows
       - macos
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -280,6 +285,53 @@ jobs:
       - release
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
+    env:
+      PUBLIC_DESKTOP_FUSHI_VERSION: ${{ needs.prepare.outputs.version }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Rust wasm target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen CLI
+        shell: bash
+        run: cargo install wasm-bindgen-cli --version 0.2.122 --locked
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Pull Vercel project settings
+        working-directory: web
+        run: npx vercel@48.12.0 pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+
+      - name: Build Vercel output
+        working-directory: web
+        run: npx vercel@48.12.0 build --prod --token="${{ secrets.VERCEL_TOKEN }}"
+
+      - name: Deploy prebuilt website
+        working-directory: web
+        run: npx vercel@48.12.0 deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}"
+
+  deploy_web_main:
+    name: Deploy website to Vercel from main
+    environment: Release
+    needs:
+      - prepare
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       PUBLIC_DESKTOP_FUSHI_VERSION: ${{ needs.prepare.outputs.version }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

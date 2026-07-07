@@ -83,9 +83,8 @@ dependency builds do not dominate every release run.
 
 After release assets are uploaded, `deploy_web` builds the Astro site with
 `PUBLIC_DESKTOP_FUSHI_VERSION=<Cargo package version>` and deploys the prebuilt
-output to Vercel. Vercel production deploys should come from that job rather
-than Git push auto-deploys, so release download links always point at uploaded
-`v<version>` assets.
+output to Vercel. Pushes to `main` also run `deploy_web_main`, which deploys the
+same prebuilt Vercel output without running desktop release artifact jobs.
 
 The website uses these stable public release asset names:
 
