@@ -4,6 +4,7 @@ const canonicalUrl = `${siteUrl}/embed`;
 const pageTitle = "Desktop Fushi Embed";
 const pageDescription = "An embeddable WebGPU Desktop Fushi experience.";
 const ogImageUrl = `${siteUrl}/desktop-fushi-og.png`;
+const oEmbedUrl = `${siteUrl}/oembed.json?url=${encodeURIComponent(canonicalUrl)}`;
 ---
 
 <!doctype html>
@@ -16,6 +17,7 @@ const ogImageUrl = `${siteUrl}/desktop-fushi-og.png`;
     <meta name="robots" content="index,follow,max-image-preview:large" />
     <meta name="theme-color" content="#f6f2e8" />
     <link rel="canonical" href={canonicalUrl} />
+    <link rel="alternate" type="application/json+oembed" href={oEmbedUrl} title="Desktop Fushi oEmbed" />
     <meta property="og:site_name" content="Desktop Fushi" />
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={pageDescription} />

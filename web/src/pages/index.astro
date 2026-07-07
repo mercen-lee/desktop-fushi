@@ -8,6 +8,7 @@ const pageDescription =
   "Download Desktop Fushi, a tiny transparent desktop pet for Windows and macOS with interactive physics, expressions, and a GPU-rendered Fushi companion.";
 const ogImagePath = "/desktop-fushi-og.png";
 const ogImageUrl = `${siteUrl}${ogImagePath}`;
+const oEmbedUrl = `${siteUrl}/oembed.json?url=${encodeURIComponent(canonicalUrl)}`;
 const releaseBase = `https://github.com/mercen-lee/desktop-fushi/releases/download/${tag}`;
 const repositoryUrl = "https://github.com/mercen-lee/desktop-fushi";
 
@@ -82,6 +83,7 @@ const structuredData = {
     <meta name="author" content="Mercen & Rian" />
     <meta name="theme-color" content="#f6f2e8" />
     <link rel="canonical" href={canonicalUrl} />
+    <link rel="alternate" type="application/json+oembed" href={oEmbedUrl} title="Desktop Fushi oEmbed" />
     <meta property="og:site_name" content="Desktop Fushi" />
     <meta property="og:locale" content="en_US" />
     <meta property="og:title" content={pageTitle} />
