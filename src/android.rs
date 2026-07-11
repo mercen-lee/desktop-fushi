@@ -10,6 +10,9 @@ use raw_window_handle::{
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 
 use crate::desktop::{DesktopEnvironment, SurfaceContact, SurfaceKind};
 use crate::fushi::render::FushiRenderer;
@@ -81,7 +84,288 @@ impl HasDisplayHandle for AndroidNativeWindow {
     }
 }
 
-pub struct AndroidFushiEngine {
+struct PendingFrame {
+    dt: f32,
+    screen_width: i32,
+    screen_height: i32,
+    pending: bool,
+}
+
+impl PendingFrame {
+    fn new(screen_width: i32, screen_height: i32) -> Self {
+        Self {
+            dt: 0.0,
+            screen_width,
+            screen_height,
+            pending: false,
+        }
+    }
+
+    fn merge(&mut self, dt: f32, screen_width: i32, screen_height: i32) {
+        self.dt = (self.dt + dt.clamp(0.001, 0.050)).min(0.12);
+        self.screen_width = screen_width;
+        self.screen_height = screen_height;
+        self.pending = true;
+    }
+
+    fn take(&mut self) -> Option<(f32, i32, i32)> {
+        if !self.pending {
+            return None;
+        }
+        let frame = (self.dt.max(0.001), self.screen_width, self.screen_height);
+        self.dt = 0.0;
+        self.pending = false;
+        Some(frame)
+    }
+}
+
+enum WorkerSignal {
+    Attach {
+        window: AndroidNativeWindow,
+        width: u32,
+        height: u32,
+    },
+    Detach {
+        completed: mpsc::SyncSender<()>,
+    },
+    Resize {
+        width: u32,
+        height: u32,
+        density: f32,
+    },
+    Pointer {
+        x: f32,
+        y: f32,
+        down: bool,
+    },
+    Hover {
+        x: f32,
+        y: f32,
+        inside: bool,
+    },
+    Shake {
+        ax: f32,
+        ay: f32,
+        az: f32,
+        dt: f32,
+    },
+    Frame,
+    Stop {
+        completed: mpsc::SyncSender<()>,
+    },
+}
+
+pub struct AndroidFushiController {
+    signal_tx: mpsc::Sender<WorkerSignal>,
+    pending_frame: Arc<Mutex<PendingFrame>>,
+    frame_queued: Arc<AtomicBool>,
+    latest_layout: Arc<Mutex<[f32; 4]>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl AndroidFushiController {
+    fn new(
+        surface_width: u32,
+        surface_height: u32,
+        density: f32,
+        screen_width: i32,
+        screen_height: i32,
+    ) -> Result<Self, String> {
+        let engine = AndroidFushiEngine::new(
+            surface_width,
+            surface_height,
+            density,
+            screen_width,
+            screen_height,
+        );
+        let initial_layout = engine.layout();
+        let (signal_tx, signal_rx) = mpsc::channel();
+        let pending_frame = Arc::new(Mutex::new(PendingFrame::new(
+            screen_width,
+            screen_height,
+        )));
+        let frame_queued = Arc::new(AtomicBool::new(false));
+        let latest_layout = Arc::new(Mutex::new(initial_layout));
+
+        let worker_pending_frame = pending_frame.clone();
+        let worker_frame_queued = frame_queued.clone();
+        let worker_latest_layout = latest_layout.clone();
+        let worker = thread::Builder::new()
+            .name("Desktop Fushi wgpu".to_string())
+            .spawn(move || {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    run_render_worker(
+                        engine,
+                        signal_rx,
+                        worker_pending_frame,
+                        worker_frame_queued,
+                        worker_latest_layout,
+                    );
+                }));
+                if result.is_err() {
+                    log::error!("Android render thread panicked");
+                }
+            })
+            .map_err(|err| format!("failed to start Android render thread: {err}"))?;
+
+        Ok(Self {
+            signal_tx,
+            pending_frame,
+            frame_queued,
+            latest_layout,
+            worker: Some(worker),
+        })
+    }
+
+    fn attach_surface(
+        &self,
+        window: AndroidNativeWindow,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        self.signal_tx
+            .send(WorkerSignal::Attach {
+                window,
+                width: width.max(1),
+                height: height.max(1),
+            })
+            .map_err(|_| "Android render thread is not available".to_string())
+    }
+
+    fn detach_surface(&self) {
+        let (completed_tx, completed_rx) = mpsc::sync_channel(0);
+        if self
+            .signal_tx
+            .send(WorkerSignal::Detach {
+                completed: completed_tx,
+            })
+            .is_ok()
+        {
+            let _ = completed_rx.recv();
+        }
+    }
+
+    fn resize_surface(&self, width: u32, height: u32, density: f32) {
+        let _ = self.signal_tx.send(WorkerSignal::Resize {
+            width: width.max(1),
+            height: height.max(1),
+            density: density.max(0.5),
+        });
+    }
+
+    fn pointer(&self, x: f32, y: f32, down: bool) {
+        let _ = self.signal_tx.send(WorkerSignal::Pointer { x, y, down });
+    }
+
+    fn hover(&self, x: f32, y: f32, inside: bool) {
+        let _ = self.signal_tx.send(WorkerSignal::Hover { x, y, inside });
+    }
+
+    fn shake(&self, ax: f32, ay: f32, az: f32, dt: f32) {
+        let _ = self.signal_tx.send(WorkerSignal::Shake {
+            ax,
+            ay,
+            az,
+            dt: dt.clamp(0.001, 0.060),
+        });
+    }
+
+    fn request_frame(&self, dt: f32, screen_width: i32, screen_height: i32) {
+        lock_unpoisoned(&self.pending_frame).merge(dt, screen_width, screen_height);
+        if !self.frame_queued.swap(true, Ordering::AcqRel)
+            && self.signal_tx.send(WorkerSignal::Frame).is_err()
+        {
+            self.frame_queued.store(false, Ordering::Release);
+        }
+    }
+
+    fn latest_layout(&self) -> [f32; 4] {
+        *lock_unpoisoned(&self.latest_layout)
+    }
+
+    fn stop(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        let (completed_tx, completed_rx) = mpsc::sync_channel(0);
+        if self
+            .signal_tx
+            .send(WorkerSignal::Stop {
+                completed: completed_tx,
+            })
+            .is_ok()
+        {
+            let _ = completed_rx.recv();
+        }
+        let _ = worker.join();
+    }
+}
+
+impl Drop for AndroidFushiController {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn run_render_worker(
+    mut engine: AndroidFushiEngine,
+    signal_rx: mpsc::Receiver<WorkerSignal>,
+    pending_frame: Arc<Mutex<PendingFrame>>,
+    frame_queued: Arc<AtomicBool>,
+    latest_layout: Arc<Mutex<[f32; 4]>>,
+) {
+    log::info!("Android render thread started");
+    while let Ok(signal) = signal_rx.recv() {
+        match signal {
+            WorkerSignal::Attach {
+                window,
+                width,
+                height,
+            } => {
+                if let Err(err) = engine.attach_surface(window, width, height) {
+                    log::error!("Android surface attach failed: {err}");
+                }
+            }
+            WorkerSignal::Detach { completed } => {
+                engine.detach_surface();
+                let _ = completed.send(());
+            }
+            WorkerSignal::Resize {
+                width,
+                height,
+                density,
+            } => engine.resize_surface(width, height, density),
+            WorkerSignal::Pointer { x, y, down } => engine.pointer(x, y, down),
+            WorkerSignal::Hover { x, y, inside } => engine.hover(x, y, inside),
+            WorkerSignal::Shake { ax, ay, az, dt } => engine.shake(ax, ay, az, dt),
+            WorkerSignal::Frame => {
+                // Clear the queued marker before taking the merged frame. A concurrently arriving
+                // vsync may enqueue one harmless extra wake-up, but no frame request can be lost.
+                frame_queued.store(false, Ordering::Release);
+                let frame = lock_unpoisoned(&pending_frame).take();
+                if let Some((dt, screen_width, screen_height)) = frame {
+                    let layout = engine.step(dt, screen_width, screen_height);
+                    *lock_unpoisoned(&latest_layout) = layout;
+                }
+            }
+            WorkerSignal::Stop { completed } => {
+                engine.detach_surface();
+                let _ = completed.send(());
+                break;
+            }
+        }
+    }
+    engine.detach_surface();
+    log::info!("Android render thread stopped");
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct AndroidFushiEngine {
     env: DesktopEnvironment,
     fushi: FushiBody,
     renderer: FushiRenderer,
@@ -98,6 +382,7 @@ pub struct AndroidFushiEngine {
     hovering: bool,
     hover_world: Vec2,
     density: f32,
+    render_error_logged: bool,
 }
 
 impl AndroidFushiEngine {
@@ -148,7 +433,17 @@ impl AndroidFushiEngine {
             hovering: false,
             hover_world: FAR_CURSOR,
             density,
+            render_error_logged: false,
         }
+    }
+
+    fn layout(&self) -> [f32; 4] {
+        [
+            self.window_origin.x,
+            self.window_origin.y,
+            self.window_size.0 as f32,
+            self.window_size.1 as f32,
+        ]
     }
 
     fn attach_surface(
@@ -163,7 +458,10 @@ impl AndroidFushiEngine {
         let size = WgpuSurfaceSize::new(self.surface_width, self.surface_height);
         let layer = pollster::block_on(WgpuLayer::new(window, size))?;
         self.wgpu = Some(layer);
+        self.render_error_logged = false;
         self.render_timer = FRAME_TIMER_WAKE;
+        self.render();
+        self.render_timer = 0.0;
         log::info!(
             "attached Android wgpu surface {}x{}",
             self.surface_width,
@@ -225,7 +523,10 @@ impl AndroidFushiEngine {
         }
         match (down, self.pointer_down) {
             (true, false) => {
-                let _ = self.fushi.try_begin_drag(world);
+                self.pointer_down = self.fushi.try_begin_drag(world);
+                if !self.pointer_down {
+                    self.restore_hover_cursor();
+                }
             }
             (true, true) => {
                 if self.fushi.mode == MotionMode::Dragged {
@@ -237,13 +538,13 @@ impl AndroidFushiEngine {
                     self.fushi.drag_to(world);
                     self.fushi.release_drag();
                 }
+                self.pointer_down = false;
                 self.restore_hover_cursor();
             }
             (false, false) => {
                 self.restore_hover_cursor();
             }
         }
-        self.pointer_down = down;
         self.render_timer = FRAME_TIMER_WAKE;
     }
 
@@ -281,7 +582,7 @@ impl AndroidFushiEngine {
 
     fn step(&mut self, dt: f32, screen_width: i32, screen_height: i32) -> [f32; 4] {
         self.set_screen(screen_width, screen_height);
-        let dt = dt.clamp(0.001, 0.050);
+        let dt = dt.clamp(0.001, 0.12);
         self.accumulator = (self.accumulator + dt).min(0.12);
         self.render_timer = (self.render_timer + dt).min(FRAME_TIMER_WAKE);
 
@@ -324,11 +625,12 @@ impl AndroidFushiEngine {
             self.render();
         }
 
-        [origin.x, origin.y, size.0 as f32, size.1 as f32]
+        self.layout()
     }
 
     fn high_activity(&self) -> bool {
-        self.pointer_down || self.fushi.mode != MotionMode::Attached
+        self.pointer_down
+            || self.fushi.mode != MotionMode::Attached
             || self
                 .fushi
                 .surface
@@ -350,8 +652,14 @@ impl AndroidFushiEngine {
             return;
         };
         wgpu.resize(width, height);
-        if let Err(err) = wgpu.render(&scene) {
-            log::error!("Android wgpu render failed: {err}");
+        match wgpu.render(&scene) {
+            Ok(_) => self.render_error_logged = false,
+            Err(err) => {
+                if !self.render_error_logged {
+                    log::error!("Android wgpu render failed: {err}");
+                    self.render_error_logged = true;
+                }
+            }
         }
     }
 }
@@ -367,17 +675,19 @@ fn android_window_rect_for_body(
     screen_height: i32,
 ) -> (Vec2, (u32, u32)) {
     let bounds = fushi.render_bounds().inflate(WINDOW_PADDING);
+    let screen_width = screen_width.max(MIN_SURFACE_SIZE as i32) as u32;
+    let screen_height = screen_height.max(MIN_SURFACE_SIZE as i32) as u32;
     let desired_width = bounds.width().ceil().max(MIN_SURFACE_SIZE as f32) as u32;
     let desired_height = bounds.height().ceil().max(MIN_SURFACE_SIZE as f32) as u32;
-    let width = grow_surface_dimension(current_size.0, desired_width);
-    let height = grow_surface_dimension(current_size.1, desired_height);
+    let width = grow_surface_dimension(current_size.0, desired_width).min(screen_width);
+    let height = grow_surface_dimension(current_size.1, desired_height).min(screen_height);
 
     let mut origin = Vec2::new(
         ((bounds.left + bounds.right) * 0.5 - width as f32 * 0.5).floor(),
         ((bounds.top + bounds.bottom) * 0.5 - height as f32 * 0.5).floor(),
     );
-    let max_x = (screen_width.max(1) as f32 - width as f32).max(0.0);
-    let max_y = (screen_height.max(1) as f32 - height as f32).max(0.0);
+    let max_x = (screen_width as f32 - width as f32).max(0.0);
+    let max_y = (screen_height as f32 - height as f32).max(0.0);
     origin.x = clampf(origin.x, 0.0, max_x);
     origin.y = clampf(origin.y, 0.0, max_y);
     (origin, (width, height))
@@ -415,11 +725,11 @@ fn keep_android_fushi_visible(fushi: &mut FushiBody, screen_width: i32, screen_h
     fushi.translate_world(delta);
 }
 
-unsafe fn engine_mut<'a>(ptr: jlong) -> Option<&'a mut AndroidFushiEngine> {
+unsafe fn controller_ref<'a>(ptr: jlong) -> Option<&'a AndroidFushiController> {
     if ptr == 0 {
         None
     } else {
-        Some(&mut *(ptr as *mut AndroidFushiEngine))
+        Some(&*(ptr as *const AndroidFushiController))
     }
 }
 
@@ -435,7 +745,7 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeCreat
 ) -> jlong {
     init_android_logging();
     match catch_unwind(AssertUnwindSafe(|| {
-        AndroidFushiEngine::new(
+        AndroidFushiController::new(
             surface_width.max(1) as u32,
             surface_height.max(1) as u32,
             density.max(0.5),
@@ -443,7 +753,11 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeCreat
             screen_height,
         )
     })) {
-        Ok(engine) => Box::into_raw(Box::new(engine)) as jlong,
+        Ok(Ok(controller)) => Box::into_raw(Box::new(controller)) as jlong,
+        Ok(Err(err)) => {
+            log::error!("Desktop Fushi Android init failed: {err}");
+            0
+        }
         Err(_) => 0,
     }
 }
@@ -457,9 +771,9 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeDestr
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if ptr != 0 {
             unsafe {
-                let mut engine = Box::from_raw(ptr as *mut AndroidFushiEngine);
-                engine.detach_surface();
-                drop(engine);
+                let mut controller = Box::from_raw(ptr as *mut AndroidFushiController);
+                controller.stop();
+                drop(controller);
             }
         }
     }));
@@ -475,13 +789,13 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeAttac
     height: jint,
 ) -> jboolean {
     match catch_unwind(AssertUnwindSafe(|| unsafe {
-        let Some(engine) = engine_mut(ptr) else {
-            return Err("native engine is null".to_string());
+        let Some(controller) = controller_ref(ptr) else {
+            return Err("native controller is null".to_string());
         };
         let Some(window) = AndroidNativeWindow::from_surface(&mut env, surface) else {
             return Err("ANativeWindow_fromSurface returned null".to_string());
         };
-        engine.attach_surface(window, width.max(1) as u32, height.max(1) as u32)
+        controller.attach_surface(window, width.max(1) as u32, height.max(1) as u32)
     })) {
         Ok(Ok(())) => 1,
         Ok(Err(err)) => {
@@ -499,8 +813,8 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeDetac
     ptr: jlong,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        if let Some(engine) = engine_mut(ptr) {
-            engine.detach_surface();
+        if let Some(controller) = controller_ref(ptr) {
+            controller.detach_surface();
         }
     }));
 }
@@ -515,8 +829,12 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeResiz
     density: jfloat,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        if let Some(engine) = engine_mut(ptr) {
-            engine.resize_surface(width.max(1) as u32, height.max(1) as u32, density.max(0.5));
+        if let Some(controller) = controller_ref(ptr) {
+            controller.resize_surface(
+                width.max(1) as u32,
+                height.max(1) as u32,
+                density.max(0.5),
+            );
         }
     }));
 }
@@ -531,8 +849,8 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativePoint
     down: jboolean,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        if let Some(engine) = engine_mut(ptr) {
-            engine.pointer(x, y, down != 0);
+        if let Some(controller) = controller_ref(ptr) {
+            controller.pointer(x, y, down != 0);
         }
     }));
 }
@@ -547,8 +865,8 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeHover
     inside: jboolean,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        if let Some(engine) = engine_mut(ptr) {
-            engine.hover(x, y, inside != 0);
+        if let Some(controller) = controller_ref(ptr) {
+            controller.hover(x, y, inside != 0);
         }
     }));
 }
@@ -564,15 +882,15 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeShake
     dt: jfloat,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        if let Some(engine) = engine_mut(ptr) {
-            engine.shake(ax, ay, az, dt);
+        if let Some(controller) = controller_ref(ptr) {
+            controller.shake(ax, ay, az, dt);
         }
     }));
 }
 
 #[no_mangle]
 pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeStep(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _class: JClass<'_>,
     ptr: jlong,
     dt: jfloat,
@@ -581,7 +899,10 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeStep(
     layout: JFloatArray<'_>,
 ) {
     let frame = catch_unwind(AssertUnwindSafe(|| unsafe {
-        engine_mut(ptr).map(|engine| engine.step(dt, screen_width, screen_height))
+        controller_ref(ptr).map(|controller| {
+            controller.request_frame(dt, screen_width, screen_height);
+            controller.latest_layout()
+        })
     }));
     if let Ok(Some(frame)) = frame {
         let _ = env.set_float_array_region(&layout, 0, &frame);
