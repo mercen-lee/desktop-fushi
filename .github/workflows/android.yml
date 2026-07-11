@@ -1,6 +1,18 @@
 name: Android
 
 on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - ".github/workflows/android.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "android/**"
+      - "scripts/build.py"
+      - "scripts/build_android_rust.py"
   pull_request:
     paths:
       - ".github/workflows/android.yml"
