@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - "agent/**"
+      - android
     paths:
       - ".github/workflows/android.yml"
       - "Cargo.toml"
