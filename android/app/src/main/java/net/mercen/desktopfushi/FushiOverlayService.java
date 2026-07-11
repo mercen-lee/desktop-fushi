@@ -15,10 +15,9 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.provider.Settings;
+import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -29,34 +28,19 @@ public final class FushiOverlayService extends Service implements SensorEventLis
 
     private static final String CHANNEL_ID = "desktop_fushi_overlay";
     private static final int NOTIFICATION_ID = 3118;
+    private static final int MIN_WINDOW_PX = 96;
 
-    private final Handler handler = new Handler(Looper.getMainLooper());
     private final float[] gravity = new float[]{0f, 0f, 0f};
-    private final Runnable frame = new Runnable() {
-        @Override public void run() {
-            if (overlayView == null || layoutParams == null || windowManager == null) return;
-            long now = System.nanoTime();
-            float dt = lastFrameNs == 0L ? 1f / 60f : clamp((now - lastFrameNs) / 1_000_000_000f, 0.001f, 0.033f);
-            lastFrameNs = now;
-            int screenW = getResources().getDisplayMetrics().widthPixels;
-            int screenH = getResources().getDisplayMetrics().heightPixels;
-            overlayView.step(dt, screenW, screenH);
-            updateOverlayLayout(screenW, screenH);
-            try {
-                windowManager.updateViewLayout(overlayView, layoutParams);
-            } catch (RuntimeException ignored) {
-                // The view can disappear during service shutdown.
-            }
-            handler.postDelayed(this, 16L);
-        }
-    };
+    private final Choreographer.FrameCallback frameCallback = this::doFrame;
 
     private WindowManager windowManager;
     private WindowManager.LayoutParams layoutParams;
     private FushiOverlayView overlayView;
     private SensorManager sensorManager;
     private Sensor motionSensor;
+    private Choreographer choreographer;
     private boolean sensorIsLinearAcceleration;
+    private boolean framePosted;
     private long lastSensorNs;
     private long lastFrameNs;
 
@@ -64,6 +48,7 @@ public final class FushiOverlayService extends Service implements SensorEventLis
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        choreographer = Choreographer.getInstance();
         createNotificationChannel();
     }
 
@@ -88,8 +73,9 @@ public final class FushiOverlayService extends Service implements SensorEventLis
 
     @Override public void onDestroy() {
         unregisterSensors();
-        handler.removeCallbacksAndMessages(null);
+        removeFrameCallback();
         if (overlayView != null) {
+            // Drop the wgpu surface while SurfaceHolder is still valid.
             overlayView.destroyNative();
         }
         if (windowManager != null && overlayView != null) {
@@ -99,6 +85,7 @@ public final class FushiOverlayService extends Service implements SensorEventLis
             }
         }
         overlayView = null;
+        layoutParams = null;
         super.onDestroy();
     }
 
@@ -129,30 +116,75 @@ public final class FushiOverlayService extends Service implements SensorEventLis
 
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
-    private void showOverlayIfNeeded() {
-        if (overlayView != null) return;
-        int width = dp(390);
-        int height = dp(220);
+    private void doFrame(long frameTimeNanos) {
+        framePosted = false;
+        if (overlayView == null || layoutParams == null || windowManager == null) return;
+
+        float dt = lastFrameNs == 0L
+                ? 1f / 60f
+                : clamp((frameTimeNanos - lastFrameNs) / 1_000_000_000f, 0.001f, 0.050f);
+        lastFrameNs = frameTimeNanos;
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
+        overlayView.step(dt, screenW, screenH);
+
+        if (updateOverlayLayout(screenW, screenH)) {
+            try {
+                windowManager.updateViewLayout(overlayView, layoutParams);
+            } catch (RuntimeException ignored) {
+                // The view can disappear during service shutdown.
+            }
+        }
+        postFrameCallback();
+    }
+
+    private void postFrameCallback() {
+        if (!framePosted && choreographer != null && overlayView != null) {
+            framePosted = true;
+            choreographer.postFrameCallback(frameCallback);
+        }
+    }
+
+    private void removeFrameCallback() {
+        if (choreographer != null && framePosted) {
+            choreographer.removeFrameCallback(frameCallback);
+        }
+        framePosted = false;
+        lastFrameNs = 0L;
+    }
+
+    private void showOverlayIfNeeded() {
+        if (overlayView != null) return;
+        int screenW = getResources().getDisplayMetrics().widthPixels;
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int initialWidth = Math.min(screenW, dp(390));
+        int initialHeight = Math.min(screenH, dp(220));
+
         overlayView = new FushiOverlayView(this);
         overlayView.setHost(() -> stopSelf());
-        overlayView.setWindowSize(width, height);
-        overlayView.setWindowPosition(screenW * 0.5f - width * 0.5f, Math.max(0f, screenH * 0.68f - height * 0.5f));
+        overlayView.setWindowSize(initialWidth, initialHeight);
+        overlayView.setWindowPosition(
+                screenW * 0.5f - initialWidth * 0.5f,
+                Math.max(0f, screenH * 0.68f - initialHeight * 0.5f));
+
+        // Resolve the Rust body's initial bounds before creating the SurfaceView so the first
+        // ANativeWindow and swapchain are already close to the final pet envelope.
+        overlayView.step(1f / 60f, screenW, screenH);
+
         layoutParams = new WindowManager.LayoutParams(
-            width,
-            height,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
+                Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowWidth())),
+                Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowHeight())),
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
         );
         layoutParams.gravity = Gravity.START | Gravity.TOP;
         updateOverlayLayout(screenW, screenH);
         windowManager.addView(overlayView, layoutParams);
         lastFrameNs = 0L;
-        handler.post(frame);
+        postFrameCallback();
     }
 
     private void registerSensors() {
@@ -172,6 +204,7 @@ public final class FushiOverlayService extends Service implements SensorEventLis
 
     private void unregisterSensors() {
         if (sensorManager != null) sensorManager.unregisterListener(this);
+        lastSensorNs = 0L;
     }
 
     private boolean canDrawOverlay() {
@@ -181,7 +214,10 @@ public final class FushiOverlayService extends Service implements SensorEventLis
     private void startForegroundCompat() {
         Notification notification = buildNotification();
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         } else {
             startForeground(NOTIFICATION_ID, notification);
         }
@@ -193,27 +229,28 @@ public final class FushiOverlayService extends Service implements SensorEventLis
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, openIntent, flags);
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-            ? new Notification.Builder(this, CHANNEL_ID)
-            : new Notification.Builder(this);
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
         return builder
-            .setContentTitle(getString(R.string.overlay_notification_title))
-            .setContentText(getString(R.string.overlay_notification_text))
-            .setSmallIcon(R.drawable.ic_fushi_notification)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .setShowWhen(false)
-            .build();
+                .setContentTitle(getString(R.string.overlay_notification_title))
+                .setContentText(getString(R.string.overlay_notification_text))
+                .setSmallIcon(R.drawable.ic_fushi_notification)
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .setShowWhen(false)
+                .build();
     }
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationChannel channel = new NotificationChannel(
-            CHANNEL_ID,
-            getString(R.string.app_name) + " overlay",
-            NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID,
+                getString(R.string.app_name) + " overlay",
+                NotificationManager.IMPORTANCE_LOW
         );
         channel.setDescription(getString(R.string.app_name) + " floating overlay service");
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        NotificationManager manager =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) manager.createNotificationChannel(channel);
     }
 
@@ -221,32 +258,38 @@ public final class FushiOverlayService extends Service implements SensorEventLis
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    private void updateOverlayLayout(int screenW, int screenH) {
-        if (overlayView == null || layoutParams == null) return;
-        int width = Math.max(dp(96), Math.round(overlayView.getWindowWidth()));
-        int height = Math.max(dp(96), Math.round(overlayView.getWindowHeight()));
+    private boolean updateOverlayLayout(int screenW, int screenH) {
+        if (overlayView == null || layoutParams == null) return false;
+        int width = Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowWidth()));
+        int height = Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowHeight()));
         int topInset = topWindowInsetPx();
+        int x = clampInt(
+                Math.round(overlayView.getWindowX()),
+                0,
+                Math.max(0, screenW - width));
+        int y = clampInt(
+                Math.round(overlayView.getWindowY()) - topInset,
+                -topInset,
+                Math.max(-topInset, screenH - height - topInset));
+
+        if (layoutParams.width == width
+                && layoutParams.height == height
+                && layoutParams.x == x
+                && layoutParams.y == y) {
+            return false;
+        }
         layoutParams.width = width;
         layoutParams.height = height;
-        layoutParams.x = clampInt(
-            Math.round(overlayView.getWindowX()),
-            0,
-            Math.max(0, screenW - width)
-        );
-        layoutParams.y = clampInt(
-            Math.round(overlayView.getWindowY()) - topInset,
-            -topInset,
-            Math.max(-topInset, screenH - height - topInset)
-        );
-        layoutParams.format = PixelFormat.TRANSLUCENT;
+        layoutParams.x = x;
+        layoutParams.y = y;
+        return true;
     }
 
     private int topWindowInsetPx() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && windowManager != null) {
             WindowInsets windowInsets = windowManager.getCurrentWindowMetrics().getWindowInsets();
             Insets safe = windowInsets.getInsetsIgnoringVisibility(
-                WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout()
-            );
+                    WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout());
             return Math.max(0, safe.top);
         }
         int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
