@@ -1,4 +1,4 @@
-# Desktop Fushi Android overlay
+# Pocket Fushi Android overlay
 
 The Android app uses the same Rust/wgpu Fushi core as Windows and macOS.
 The Android Java side only owns the overlay lifecycle, permission UI, sensors, input, and a transparent `SurfaceView` that supplies a native rendering surface.

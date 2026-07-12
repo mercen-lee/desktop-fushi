@@ -2,11 +2,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-pub const SMALL_FUSHI_SCALE: f32 = 0.48;
+pub use crate::fushi::constants::{
+    HUGE_FUSHI_SCALE, LARGE_FUSHI_SCALE, NORMAL_FUSHI_SCALE, SMALL_FUSHI_SCALE,
+};
+
 pub const DEFAULT_FUSHI_SCALE: f32 = SMALL_FUSHI_SCALE;
-pub const NORMAL_FUSHI_SCALE: f32 = 0.62;
-pub const LARGE_FUSHI_SCALE: f32 = 0.80;
-pub const HUGE_FUSHI_SCALE: f32 = 0.98;
 pub const DEFAULT_INTERACT_WITH_WINDOWS: bool = true;
 
 const SETTINGS_FILE_NAME: &str = "settings.ini";

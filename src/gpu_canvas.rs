@@ -8,6 +8,9 @@ use lyon::tessellation::{
     StrokeTessellator, StrokeVertex, VertexBuffers,
 };
 
+#[cfg(target_os = "android")]
+const PATH_TOLERANCE: f32 = 0.18;
+#[cfg(not(target_os = "android"))]
 const PATH_TOLERANCE: f32 = 0.05;
 const ELLIPSE_SEGMENTS: usize = 28;
 

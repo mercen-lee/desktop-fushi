@@ -1,5 +1,45 @@
 <resources>
     <string name="app_name">Pocket Fushi</string>
+    <string name="app_title_with_version">%1$s v%2$s</string>
+
+    <string name="fushi_overlay">Fushi overlay</string>
+    <string name="fushi_overlay_description">Show or hide Fushi over your other apps.</string>
+    <string name="fushi_status_starting">Starting Fushi…</string>
+    <string name="fushi_status_running">Fushi is showing over other apps.</string>
+    <string name="fushi_status_stopped">Fushi is hidden.</string>
+    <string name="overlay_permission_required">Overlay permission is required.</string>
+    <string name="running">Running</string>
+    <string name="stopped">Stopped</string>
+    <string name="starting">Starting</string>
+    <string name="startup">Startup</string>
+    <string name="start_on_boot">Start Fushi on boot</string>
+    <string name="start_on_boot_description">Shows Fushi now and automatically after you unlock your phone following a restart.</string>
+
+    <string name="fushi_size">Fushi size</string>
+    <string name="size_small">Small</string>
+    <string name="size_normal">Normal</string>
+    <string name="size_large">Large</string>
+    <string name="size_huge">Huge</string>
+    <string name="selected_size">Selected: %1$s</string>
+    <string name="fushi_size_accessibility">Fushi size, %1$s</string>
+
+    <string name="credits">Credits</string>
+    <string name="credit_version">Desktop Fushi v%1$s</string>
+    <string name="developer_credit">Developed by Mercen &amp; Rian</string>
+    <string name="character_copyright_explanation">Desktop Fushi is an unofficial fan project. Character copyright belongs to TWIN ENGINE.</string>
+    <string name="source_copyright">Source code © 2026 Mercen &amp; Rian · MIT License</string>
+    <string name="project_website" translatable="false">https://desktopfushi.mercen.net</string>
+    <string name="open_project_website">Open the Desktop Fushi website</string>
+    <string name="project_website_accessibility">Desktop Fushi v%1$s, %2$s, opens website</string>
+    <string name="website_open_failed">No app is available to open the project website.</string>
+
+    <string name="show_fushi">Show Fushi</string>
+    <string name="stop_fushi">Stop Fushi</string>
+    <string name="allow_overlay_permission">Allow overlay permission</string>
+    <string name="overlay_permission_request">Please enable the Draw over other apps permission.</string>
+    <string name="fushi_floating">Fushi is now floating.</string>
+    <string name="fushi_start_failed">Fushi could not be started.</string>
+
     <string name="overlay_notification_title">Pocket Fushi is floating</string>
-    <string name="overlay_notification_text">Shake your phone and Fushi reacts like it is wobbling inside a container.</string>
+    <string name="overlay_notification_text">Fushi is floating over your apps.</string>
 </resources>

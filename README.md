@@ -1,6 +1,6 @@
 # Desktop Fushi
 
-Desktop Fushi is a transparent desktop and Android overlay pet rendered with Rust and wgpu.
+Desktop Fushi is a transparent desktop pet rendered with Rust and wgpu. Its Android overlay release is named Pocket Fushi.
 
 Windows, macOS, and Android share the same Fushi physics, expressions, vector renderer, GPU tessellation, and wgpu presentation path.
 

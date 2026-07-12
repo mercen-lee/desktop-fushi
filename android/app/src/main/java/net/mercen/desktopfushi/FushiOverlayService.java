@@ -7,114 +7,131 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.graphics.Insets;
 import android.graphics.PixelFormat;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.IBinder;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
 import android.view.Choreographer;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.WindowMetrics;
 
-public final class FushiOverlayService extends Service implements SensorEventListener {
+public final class FushiOverlayService extends Service {
     public static final String ACTION_START = "net.mercen.desktopfushi.START";
     public static final String ACTION_STOP = "net.mercen.desktopfushi.STOP";
+    public static final String ACTION_STATE_CHANGED = "net.mercen.desktopfushi.STATE_CHANGED";
+    public static final String EXTRA_RUNNING = "running";
+    public static final String EXTRA_STARTED_FROM_BOOT = "started_from_boot";
 
     private static final String CHANNEL_ID = "desktop_fushi_overlay";
     private static final int NOTIFICATION_ID = 3118;
     private static final int MIN_WINDOW_PX = 96;
+    private static volatile boolean running;
+    private static final class DisplayGeometry {
+        final int width;
+        final int height;
+        final int workLeft;
+        final int workTop;
+        final int workRight;
+        final int workBottom;
 
-    private final float[] gravity = new float[]{0f, 0f, 0f};
+        DisplayGeometry(
+                int width,
+                int height,
+                int workLeft,
+                int workTop,
+                int workRight,
+                int workBottom) {
+            this.width = width;
+            this.height = height;
+            this.workLeft = workLeft;
+            this.workTop = workTop;
+            this.workRight = workRight;
+            this.workBottom = workBottom;
+        }
+    }
+
     private final Choreographer.FrameCallback frameCallback = this::doFrame;
+    private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener =
+            (preferences, key) -> {
+                if (FushiSettings.KEY_SIZE_PRESET.equals(key)) {
+                    applySizeSetting();
+                }
+            };
 
     private WindowManager windowManager;
     private WindowManager.LayoutParams layoutParams;
     private FushiOverlayView overlayView;
-    private SensorManager sensorManager;
-    private Sensor motionSensor;
     private Choreographer choreographer;
-    private boolean sensorIsLinearAcceleration;
     private boolean framePosted;
-    private long lastSensorNs;
     private long lastFrameNs;
 
     @Override public void onCreate() {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         choreographer = Choreographer.getInstance();
+        FushiSettings.preferences(this).registerOnSharedPreferenceChangeListener(settingsListener);
         createNotificationChannel();
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
+            setRunningState(false);
             stopSelf();
             return START_NOT_STICKY;
         }
         if (!canDrawOverlay()) {
+            setRunningState(false);
             stopSelf();
             return START_NOT_STICKY;
         }
-        // Create the visible application-overlay window before entering foreground mode.
-        // This keeps the Android 15 SYSTEM_ALERT_WINDOW foreground-service exemption
-        // path compatible while the service is started from MainActivity.
-        showOverlayIfNeeded();
-        startForegroundCompat();
-        registerSensors();
+        boolean startedFromBoot = intent != null
+                && intent.getBooleanExtra(EXTRA_STARTED_FROM_BOOT, false);
+        try {
+            // BOOT_COMPLETED is its own background-start exemption. Enter foreground immediately
+            // on that path so Surface/GPU initialization cannot consume the promotion deadline.
+            if (startedFromBoot) startForegroundCompat();
+            showOverlayIfNeeded();
+            if (!startedFromBoot) startForegroundCompat();
+        } catch (RuntimeException error) {
+            setRunningState(false);
+            stopForeground(true);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        setRunningState(overlayView != null);
         return START_STICKY;
     }
 
     @Override public void onDestroy() {
-        unregisterSensors();
+        setRunningState(false);
+        FushiSettings.preferences(this).unregisterOnSharedPreferenceChangeListener(settingsListener);
         removeFrameCallback();
-        if (overlayView != null) {
-            // Drop the wgpu surface while SurfaceHolder is still valid.
-            overlayView.destroyNative();
-        }
-        if (windowManager != null && overlayView != null) {
-            try {
-                windowManager.removeView(overlayView);
-            } catch (RuntimeException ignored) {
-            }
-        }
-        overlayView = null;
-        layoutParams = null;
+        removeOverlayView();
         super.onDestroy();
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
 
-    @Override public void onSensorChanged(SensorEvent event) {
-        if (overlayView == null) return;
-        float dt = 1f / 60f;
-        if (lastSensorNs != 0L) {
-            dt = clamp((event.timestamp - lastSensorNs) / 1_000_000_000f, 0.001f, 0.060f);
-        }
-        lastSensorNs = event.timestamp;
-
-        float ax = event.values.length > 0 ? event.values[0] : 0f;
-        float ay = event.values.length > 1 ? event.values[1] : 0f;
-        float az = event.values.length > 2 ? event.values[2] : 0f;
-        if (!sensorIsLinearAcceleration) {
-            final float alpha = 0.82f;
-            gravity[0] = alpha * gravity[0] + (1f - alpha) * ax;
-            gravity[1] = alpha * gravity[1] + (1f - alpha) * ay;
-            gravity[2] = alpha * gravity[2] + (1f - alpha) * az;
-            ax -= gravity[0];
-            ay -= gravity[1];
-            az -= gravity[2];
-        }
-        overlayView.applyPhoneShake(ax, ay, az, dt);
+    public static boolean isRunning() {
+        return running;
     }
 
-    @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    private void setRunningState(boolean value) {
+        running = value;
+        Intent state = new Intent(ACTION_STATE_CHANGED)
+                .setPackage(getPackageName())
+                .putExtra(EXTRA_RUNNING, value);
+        sendBroadcast(state);
+    }
 
     private void doFrame(long frameTimeNanos) {
         framePosted = false;
@@ -124,17 +141,26 @@ public final class FushiOverlayService extends Service implements SensorEventLis
                 ? 1f / 60f
                 : clamp((frameTimeNanos - lastFrameNs) / 1_000_000_000f, 0.001f, 0.050f);
         lastFrameNs = frameTimeNanos;
-        int screenW = getResources().getDisplayMetrics().widthPixels;
-        int screenH = getResources().getDisplayMetrics().heightPixels;
-        overlayView.step(dt, screenW, screenH);
+        DisplayGeometry geometry = displayGeometry();
 
-        if (updateOverlayLayout(screenW, screenH)) {
+        // Apply the origin of the latest frame before requesting another. Rust renders every
+        // buffer around the same local anchor and keeps the surface size fixed for this preset, so
+        // this update is position-only and cannot resize/crop the ANativeWindow.
+        if (updateOverlayLayout(geometry)) {
             try {
                 windowManager.updateViewLayout(overlayView, layoutParams);
             } catch (RuntimeException ignored) {
                 // The view can disappear during service shutdown.
             }
         }
+        overlayView.step(
+                dt,
+                geometry.width,
+                geometry.height,
+                geometry.workLeft,
+                geometry.workTop,
+                geometry.workRight,
+                geometry.workBottom);
         postFrameCallback();
     }
 
@@ -155,21 +181,28 @@ public final class FushiOverlayService extends Service implements SensorEventLis
 
     private void showOverlayIfNeeded() {
         if (overlayView != null) return;
-        int screenW = getResources().getDisplayMetrics().widthPixels;
-        int screenH = getResources().getDisplayMetrics().heightPixels;
-        int initialWidth = Math.min(screenW, dp(390));
-        int initialHeight = Math.min(screenH, dp(220));
+        DisplayGeometry geometry = displayGeometry();
 
-        overlayView = new FushiOverlayView(this);
+        overlayView = new FushiOverlayView(
+                this,
+                FushiSettings.graphicsBackend(this),
+                FushiSettings.sizePreset(this));
+        Display.Mode preferredMode = preferredDisplayMode();
+        if (preferredMode != null) {
+            overlayView.setPreferredFrameRate(preferredMode.getRefreshRate());
+        }
         overlayView.setHost(() -> stopSelf());
-        overlayView.setWindowSize(initialWidth, initialHeight);
-        overlayView.setWindowPosition(
-                screenW * 0.5f - initialWidth * 0.5f,
-                Math.max(0f, screenH * 0.68f - initialHeight * 0.5f));
 
-        // Resolve the Rust body's initial bounds before creating the SurfaceView so the first
-        // ANativeWindow and swapchain are already close to the final pet envelope.
-        overlayView.step(1f / 60f, screenW, screenH);
+        // Rust computes the preset's fixed square surface and the initial rendered world origin.
+        // Resolve that layout before addView so the first ANativeWindow already has its final size.
+        overlayView.step(
+                1f / 60f,
+                geometry.width,
+                geometry.height,
+                geometry.workLeft,
+                geometry.workTop,
+                geometry.workRight,
+                geometry.workBottom);
 
         layoutParams = new WindowManager.LayoutParams(
                 Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowWidth())),
@@ -181,30 +214,44 @@ public final class FushiOverlayService extends Service implements SensorEventLis
                 PixelFormat.TRANSLUCENT
         );
         layoutParams.gravity = Gravity.START | Gravity.TOP;
-        updateOverlayLayout(screenW, screenH);
+        if (preferredMode != null) {
+            layoutParams.preferredDisplayModeId = preferredMode.getModeId();
+            layoutParams.preferredRefreshRate = preferredMode.getRefreshRate();
+        }
+        updateOverlayLayout(geometry);
         windowManager.addView(overlayView, layoutParams);
         lastFrameNs = 0L;
         postFrameCallback();
     }
 
-    private void registerSensors() {
-        if (sensorManager == null) return;
-        if (motionSensor == null) {
-            motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-            sensorIsLinearAcceleration = motionSensor != null;
-            if (motionSensor == null) {
-                motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-                sensorIsLinearAcceleration = false;
-            }
-        }
-        if (motionSensor != null) {
-            sensorManager.registerListener(this, motionSensor, SensorManager.SENSOR_DELAY_GAME);
-        }
+    private void applySizeSetting() {
+        if (overlayView == null) return;
+        // Window dimensions are fixed for the lifetime of a native renderer. Recreate so a preset
+        // change cannot render one frame into the previous preset's Surface dimensions.
+        recreateOverlay();
     }
 
-    private void unregisterSensors() {
-        if (sensorManager != null) sensorManager.unregisterListener(this);
-        lastSensorNs = 0L;
+    private void recreateOverlay() {
+        if (overlayView == null) return;
+        removeFrameCallback();
+        removeOverlayView();
+        showOverlayIfNeeded();
+    }
+
+    private void removeOverlayView() {
+        FushiOverlayView view = overlayView;
+        overlayView = null;
+        layoutParams = null;
+        if (view == null) return;
+
+        // Drop the wgpu surface while SurfaceHolder is still valid.
+        view.destroyNative();
+        if (windowManager != null) {
+            try {
+                windowManager.removeView(view);
+            } catch (RuntimeException ignored) {
+            }
+        }
     }
 
     private boolean canDrawOverlay() {
@@ -254,23 +301,16 @@ public final class FushiOverlayService extends Service implements SensorEventLis
         if (manager != null) manager.createNotificationChannel(channel);
     }
 
-    private int dp(float value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private boolean updateOverlayLayout(int screenW, int screenH) {
+    private boolean updateOverlayLayout(DisplayGeometry geometry) {
         if (overlayView == null || layoutParams == null) return false;
         int width = Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowWidth()));
         int height = Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowHeight()));
-        int topInset = topWindowInsetPx();
-        int x = clampInt(
-                Math.round(overlayView.getWindowX()),
-                0,
-                Math.max(0, screenW - width));
-        int y = clampInt(
-                Math.round(overlayView.getWindowY()) - topInset,
-                -topInset,
-                Math.max(-topInset, screenH - height - topInset));
+
+        // START|TOP coordinates are relative to WindowManager's work area. Keep Rust's exact
+        // rendered world origin, including negative values at a wall; FLAG_LAYOUT_NO_LIMITS makes
+        // those coordinates legal and avoids one-sided clamping/cropping.
+        int x = Math.round(overlayView.getWindowX()) - geometry.workLeft;
+        int y = Math.round(overlayView.getWindowY()) - geometry.workTop;
 
         if (layoutParams.width == width
                 && layoutParams.height == height
@@ -285,15 +325,53 @@ public final class FushiOverlayService extends Service implements SensorEventLis
         return true;
     }
 
-    private int topWindowInsetPx() {
+    private DisplayGeometry displayGeometry() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && windowManager != null) {
-            WindowInsets windowInsets = windowManager.getCurrentWindowMetrics().getWindowInsets();
-            Insets safe = windowInsets.getInsetsIgnoringVisibility(
-                    WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout());
-            return Math.max(0, safe.top);
+            WindowMetrics metrics = windowManager.getCurrentWindowMetrics();
+            Rect bounds = metrics.getBounds();
+            Insets safe = metrics.getWindowInsets().getInsetsIgnoringVisibility(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            int width = Math.max(1, bounds.width());
+            int height = Math.max(1, bounds.height());
+            return new DisplayGeometry(
+                    width,
+                    height,
+                    clampInt(safe.left, 0, width - 1),
+                    clampInt(safe.top, 0, height - 1),
+                    clampInt(width - safe.right, 1, width),
+                    clampInt(height - safe.bottom, 1, height));
         }
-        int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
-        return id > 0 ? getResources().getDimensionPixelSize(id) : 0;
+
+        DisplayMetrics metrics = new DisplayMetrics();
+        Display display = windowManager == null ? null : windowManager.getDefaultDisplay();
+        if (display != null) {
+            display.getRealMetrics(metrics);
+        } else {
+            metrics.setTo(getResources().getDisplayMetrics());
+        }
+        int width = Math.max(1, metrics.widthPixels);
+        int height = Math.max(1, metrics.heightPixels);
+        int statusId = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        int navigationId = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+        int top = statusId > 0 ? getResources().getDimensionPixelSize(statusId) : 0;
+        int bottom = navigationId > 0 ? getResources().getDimensionPixelSize(navigationId) : 0;
+        return new DisplayGeometry(width, height, 0, top, width, Math.max(top + 1, height - bottom));
+    }
+
+    private Display.Mode preferredDisplayMode() {
+        if (windowManager == null) return null;
+        Display display = windowManager.getDefaultDisplay();
+        if (display == null) return null;
+        Display.Mode current = display.getMode();
+        Display.Mode best = current;
+        for (Display.Mode candidate : display.getSupportedModes()) {
+            if (candidate.getPhysicalWidth() == current.getPhysicalWidth()
+                    && candidate.getPhysicalHeight() == current.getPhysicalHeight()
+                    && candidate.getRefreshRate() > best.getRefreshRate()) {
+                best = candidate;
+            }
+        }
+        return best;
     }
 
     private static int clampInt(int value, int lo, int hi) {

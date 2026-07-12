@@ -108,6 +108,20 @@ fn approach_angle(current: f32, target: f32, max_delta: f32) -> f32 {
     wrap_angle(current + wrap_angle(target - current).clamp(-max_delta, max_delta))
 }
 
+fn content_bound_anchors() -> [Vec2; 9] {
+    [
+        Vec2::new(-130.0, -166.0),
+        Vec2::new(-78.0, -172.0),
+        Vec2::new(-6.0, -166.0),
+        TAIL_ANCHOR + Vec2::new(108.0, -78.0),
+        TAIL_ANCHOR + Vec2::new(-66.0, -70.0),
+        TAIL_ANCHOR + Vec2::new(100.0, 58.0),
+        TAIL_ANCHOR + Vec2::new(-56.0, 48.0),
+        Vec2::new(-155.0, 80.0),
+        Vec2::new(155.0, 80.0),
+    ]
+}
+
 #[derive(Clone)]
 pub struct FushiBody {
     pub mesh: SoftBody,
@@ -660,30 +674,39 @@ impl FushiBody {
         }
     }
 
-    pub fn render_bounds(&self) -> RectF {
+    /// Returns the bounds occupied by the body and its appendages without any
+    /// platform/window-management safety margin.
+    pub fn content_bounds(&self) -> RectF {
         let mut min = self.center;
         let mut max = self.center;
         if let Some((a, b)) = self.mesh.bounds() {
             min = min.min(a);
             max = max.max(b);
         }
-        let anchors = [
-            Vec2::new(-130.0, -166.0),
-            Vec2::new(-78.0, -172.0),
-            Vec2::new(-6.0, -166.0),
-            TAIL_ANCHOR + Vec2::new(108.0, -78.0),
-            TAIL_ANCHOR + Vec2::new(-66.0, -70.0),
-            TAIL_ANCHOR + Vec2::new(100.0, 58.0),
-            TAIL_ANCHOR + Vec2::new(-56.0, 48.0),
-            Vec2::new(-155.0, 80.0),
-            Vec2::new(155.0, 80.0),
-        ];
-        for a in anchors {
+        for a in content_bound_anchors() {
             let p = self.local_to_world(a);
             min = min.min(p);
             max = max.max(p);
         }
-        RectF::new(min.x, min.y, max.x, max.y).inflate(RENDER_WINDOW_MARGIN)
+        RectF::new(min.x, min.y, max.x, max.y)
+    }
+
+    /// Returns the farthest conservative body/appendage point from the rigid center.
+    /// Unlike the diagonal of `content_bounds`, this does not invent an empty corner by
+    /// combining the x extent of one appendage with the y extent of another.
+    pub fn content_radius(&self) -> f32 {
+        let mut radius_sq: f32 = 0.0;
+        for node in &self.mesh.nodes {
+            radius_sq = radius_sq.max((node.pos - self.center).length_sq());
+        }
+        for anchor in content_bound_anchors() {
+            radius_sq = radius_sq.max((self.local_to_world(anchor) - self.center).length_sq());
+        }
+        radius_sq.sqrt()
+    }
+
+    pub fn render_bounds(&self) -> RectF {
+        self.content_bounds().inflate(RENDER_WINDOW_MARGIN)
     }
 
     pub fn translate_world(&mut self, delta: Vec2) {
