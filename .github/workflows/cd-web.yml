@@ -1,0 +1,78 @@
+name: CD · Web
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cd-web.yml"
+      - "scripts/cd.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "assets/**"
+      - "vercel.json"
+      - "web/**"
+  workflow_call:
+    inputs:
+      version:
+        description: Published Cargo package version without the v prefix
+        required: true
+        type: string
+      ref:
+        description: Git ref containing the website source to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-web-${{ github.event_name == 'workflow_call' && inputs.version || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  deploy:
+    name: Deploy website to Vercel
+    environment: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout website source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Resolve public release version
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/cd.py resolve-web-version --github-output "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Rust wasm target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.122 --locked
+
+      - name: Build and deploy website
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: python scripts/cd.py deploy-web --version "${{ steps.release.outputs.version }}"

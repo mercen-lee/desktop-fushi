@@ -1,0 +1,65 @@
+name: CI · Android
+
+on:
+  push:
+    branches:
+      - main
+      - android
+    paths:
+      - ".github/actions/setup-android/**"
+      - ".github/workflows/ci-android.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "android/**"
+      - "scripts/ci.py"
+      - "scripts/build.py"
+      - "scripts/build_android_rust.py"
+  pull_request:
+    paths:
+      - ".github/actions/setup-android/**"
+      - ".github/workflows/ci-android.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "android/**"
+      - "scripts/ci.py"
+      - "scripts/build.py"
+      - "scripts/build_android_rust.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Android arm64 debug
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Android build
+        uses: ./.github/actions/setup-android
+        with:
+          rust_targets: aarch64-linux-android
+          rust_cache_key: ci-android-arm64
+
+      - name: Build Android arm64 debug APK
+        run: python scripts/ci.py android --abis arm64-v8a
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocket-fushi-android-arm64-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7

@@ -66,25 +66,55 @@ Desktop builds use `--debug` / `--release`.
 - Android: `android/app/build/outputs/apk/<variant>/app-<variant>.apk`
 - Android native libraries: `android/app/src/main/jniLibs/<abi>/libdesktop_fushi.so`
 
-## GitHub release automation
+## GitHub automation
 
-`.github/workflows/release.yml` builds release artifacts on pushes to
-`vX.Y.Z` tags and on manual `workflow_dispatch` runs. The workflow reads
-`[package].version` from `Cargo.toml`, verifies that release tag pushes match
-`v<version>`, publishes to that release tag, and uploads:
+GitHub Actions is organized by lifecycle and platform rather than by one large
+release workflow:
+
+- `ci-quality.yml` runs Python script compilation plus Rust formatting, checks,
+  Clippy, and tests on every pull request and protected-branch push.
+- `ci-desktop.yml` smoke-builds Windows x64 and macOS arm64 desktop bundles.
+- `ci-android.yml` builds an arm64 debug APK and uploads
+  `pocket-fushi-android-arm64-debug`.
+- `ci-web.yml` builds the WebAssembly and Astro site without deploying it.
+- `cd-release.yml` builds all platform assets from a `vX.Y.Z` tag and publishes
+  the GitHub Release. A manual run requires an existing tag and rebuilds that
+  exact tag; it cannot publish the branch selected in the Actions UI.
+- `cd-web.yml` deploys the website after a release and for relevant `main`
+  changes. Main deployments use the latest published release tag for download
+  links, so an unreleased Cargo version cannot create broken public URLs.
+
+Runner setup, caches, secrets, and artifact transfer remain in YAML. The
+repository-specific behavior lives in `scripts/ci.py` (quality and build
+checks) and `scripts/cd.py` (tag validation, packaging, signing, release
+verification, GitHub publishing, and Vercel deployment). Android toolchain
+setup is shared through `.github/actions/setup-android`.
+
+The CI entry points are also useful locally after the required platform
+toolchains are installed:
+
+```bash
+python scripts/ci.py quality
+python scripts/ci.py desktop --platform macos --arch arm64
+python scripts/ci.py android --abis arm64-v8a
+python scripts/ci.py web
+```
+
+Run `python scripts/cd.py --help` to inspect the release-only packaging,
+signing, verification, publishing, and deployment commands.
+
+The release workflow reads `[package].version` from `Cargo.toml`, verifies it
+matches `v<version>`, publishes to that tag, and uploads:
 
 - Windows x64 zip
 - Windows ARM64 zip
 - macOS ARM64 app zip
 - macOS universal app zip
+- Pocket Fushi Android universal APK
 
-The CD jobs run platform builds in parallel and restore Rust caches so
-dependency builds do not dominate every release run.
-
-After release assets are uploaded, `deploy_web` builds the Astro site with
-`PUBLIC_DESKTOP_FUSHI_VERSION=<Cargo package version>` and deploys the prebuilt
-output to Vercel. Pushes to `main` also run `deploy_web_main`, which deploys the
-same prebuilt Vercel output without running desktop release artifact jobs.
+The release jobs run platform builds in parallel and restore Rust caches so
+dependency builds do not dominate every release run. Only the publish job has
+write permission to repository contents.
 
 The website uses these stable public release asset names:
 
@@ -92,6 +122,17 @@ The website uses these stable public release asset names:
 - `desktop-fushi-v<version>-windows-arm64.zip`
 - `desktop-fushi-v<version>-macos-arm64.zip`
 - `desktop-fushi-v<version>-macos-universal.zip`
+- `pocket-fushi-v<version>-android-universal.apk`
+
+The Android release APK includes `arm64-v8a`, `armeabi-v7a`, and `x86_64`
+native libraries. Gradle produces an unsigned release APK, then the release
+workflow aligns and signs it as Pocket Fushi. Configure these repository
+secrets before publishing a tag:
+
+- `ANDROID_KEYSTORE_BASE64` — Base64-encoded release keystore
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
 
 ## Android requirements
 
