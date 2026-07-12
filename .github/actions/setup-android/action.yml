@@ -1,0 +1,62 @@
+name: Set up Android build
+description: Install the shared Android, Rust, Python, Java, and Gradle toolchain.
+
+inputs:
+  rust_targets:
+    description: Comma-separated Rust targets required by this job.
+    required: true
+  rust_cache_key:
+    description: Shared key for the Rust build cache.
+    required: true
+  ndk_version:
+    description: Android NDK version to install.
+    default: "28.2.13676358"
+  gradle_version:
+    description: Gradle version used because the repository has no wrapper.
+    default: "8.10.2"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: Set up Java
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: "17"
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Android SDK and NDK
+      shell: bash
+      run: |
+        set -euo pipefail
+        yes | sdkmanager --licenses >/dev/null || true
+        sdkmanager \
+          "platforms;android-35" \
+          "build-tools;35.0.0" \
+          "ndk;${{ inputs.ndk_version }}"
+        echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.rust_targets }}
+
+    - name: Restore Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.rust_cache_key }}
+        cache-targets: true
+        cache-on-failure: true
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        gradle-version: ${{ inputs.gradle_version }}
+        cache-provider: basic

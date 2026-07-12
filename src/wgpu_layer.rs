@@ -111,7 +111,18 @@ impl WgpuLayer {
     where
         W: HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
     {
-        let instance = create_instance().await;
+        Self::new_with_backends(window, size, preferred_backends()).await
+    }
+
+    pub async fn new_with_backends<W>(
+        window: W,
+        size: WgpuSurfaceSize,
+        backends: wgpu::Backends,
+    ) -> Result<Self, String>
+    where
+        W: HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
+    {
+        let instance = create_instance(backends).await;
 
         #[cfg(target_os = "windows")]
         let surface: Option<wgpu::Surface<'static>> = {
@@ -133,7 +144,7 @@ impl WgpuLayer {
         canvas: web_sys::HtmlCanvasElement,
         size: WgpuSurfaceSize,
     ) -> Result<Self, String> {
-        let instance = create_instance().await;
+        let instance = create_instance(preferred_backends()).await;
         let surface = Some(
             instance
                 .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
@@ -156,6 +167,17 @@ impl WgpuLayer {
             })
             .await
             .map_err(|err| format!("failed to find a compatible GPU adapter: {err}"))?;
+        #[cfg(target_os = "android")]
+        {
+            let info = adapter.get_info();
+            log::info!(
+                "wgpu adapter backend={:?} name={} driver={} driver_info={}",
+                info.backend,
+                info.name,
+                info.driver,
+                info.driver_info
+            );
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Desktop Fushi device"),
@@ -186,10 +208,12 @@ impl WgpuLayer {
             config.format = surface_format(&capabilities, config.format);
             config.alpha_mode = surface_alpha_mode(&capabilities, config.alpha_mode);
             config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+            config.present_mode = wgpu::PresentMode::AutoVsync;
             config.desired_maximum_frame_latency = 2;
             #[cfg(target_os = "android")]
             log::info!(
-                "wgpu surface format={:?} alpha_modes={:?} selected_alpha={:?}",
+                "wgpu surface formats={:?} selected_format={:?} alpha_modes={:?} selected_alpha={:?}",
+                capabilities.formats,
                 config.format,
                 capabilities.alpha_modes,
                 config.alpha_mode
@@ -619,9 +643,14 @@ impl WgpuLayer {
     }
 }
 
-async fn create_instance() -> wgpu::Instance {
+async fn create_instance(backends: wgpu::Backends) -> wgpu::Instance {
+    let flags = wgpu::InstanceFlags::from_build_config();
+    #[cfg(target_os = "android")]
+    let flags = flags.difference(wgpu::InstanceFlags::DEBUG);
+
     let descriptor = wgpu::InstanceDescriptor {
-        backends: preferred_backends(),
+        backends,
+        flags,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     };
 
@@ -636,6 +665,18 @@ async fn create_instance() -> wgpu::Instance {
     {
         wgpu::Instance::new(descriptor)
     }
+}
+
+#[cfg(target_os = "android")]
+pub fn android_backend_available(backend: wgpu::Backends) -> bool {
+    let instance = pollster::block_on(create_instance(backend));
+    pollster::block_on(instance.enumerate_adapters(backend))
+        .iter()
+        .any(|adapter| match adapter.get_info().backend {
+            wgpu::Backend::Vulkan => backend.contains(wgpu::Backends::VULKAN),
+            wgpu::Backend::Gl => backend.contains(wgpu::Backends::GL),
+            _ => false,
+        })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -820,8 +861,12 @@ fn surface_format(
     _capabilities: &wgpu::SurfaceCapabilities,
     fallback: wgpu::TextureFormat,
 ) -> wgpu::TextureFormat {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "android"))]
     {
+        // Fushi's palette is authored as display-ready sRGB channel values.  Keep
+        // those values unchanged here, as on the desktop/offscreen paths; an sRGB
+        // surface would treat them as linear and encode them again, washing out
+        // mid-tones.  This does not alter the premultiplied-alpha contract.
         let linear = fallback.remove_srgb_suffix();
         if _capabilities.formats.contains(&linear) {
             return linear;

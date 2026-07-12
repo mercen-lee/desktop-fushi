@@ -70,7 +70,10 @@ android {
 val requestedReleaseBuild = gradle.startParameter.taskNames.any {
     it.contains("Release", ignoreCase = true)
 }
-val defaultRustProfile = if (requestedReleaseBuild) "release" else "debug"
+// Even debug-signed APKs need optimized Rust: wgpu + lyon at opt-level 0 cannot keep up
+// with a phone's display refresh rate. Pass -PdesktopFushiRustProfile=debug explicitly
+// when native source-level debugging is more important than animation performance.
+val defaultRustProfile = "release"
 val rustProfile = providers.gradleProperty("desktopFushiRustProfile").orElse(defaultRustProfile)
 val rustAbis = providers.gradleProperty("desktopFushiRustAbis").orElse("arm64-v8a,armeabi-v7a,x86_64")
 val pythonExe = providers.environmentVariable("PYTHON")

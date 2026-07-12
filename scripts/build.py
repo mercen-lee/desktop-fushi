@@ -250,7 +250,11 @@ def build_android(args: argparse.Namespace) -> None:
     android_dir = ROOT / "android"
     if not android_dir.exists():
         raise SystemExit("android/ project is missing")
-    profile = "release" if args.variant.lower() == "release" else "debug"
+    # The vector renderer is CPU-bound when Rust is compiled at opt-level 0, which can
+    # turn a debug-signed APK into a ~16 FPS build on real devices. Keep the APK variant
+    # independent from the native optimization profile; callers can still opt into an
+    # unoptimized JNI library explicitly when native debugging is required.
+    profile = args.rust_profile or "release"
     run([sys.executable, "scripts/build_android_rust.py", "--profile", profile, "--abis", args.abis])
     gradlew = android_dir / ("gradlew.bat" if os.name == "nt" else "gradlew")
     tool = str(gradlew) if gradlew.exists() else require_tool("gradle")
@@ -316,6 +320,12 @@ def parser() -> argparse.ArgumentParser:
 
     android = sub.add_parser("android", help="Build the Android wgpu overlay APK")
     android.add_argument("--variant", choices=["debug", "release"], default="debug")
+    android.add_argument(
+        "--rust-profile",
+        choices=["debug", "release"],
+        default=None,
+        help="Rust JNI profile (defaults to optimized release for smooth device rendering)",
+    )
     android.add_argument("--abis", "--abi", dest="abis", default=DEFAULT_ANDROID_ABIS)
     android.set_defaults(func=build_android)
 

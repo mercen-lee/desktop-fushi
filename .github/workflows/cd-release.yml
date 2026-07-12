@@ -1,0 +1,238 @@
+name: CD · Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to rebuild and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  prepare:
+    name: Verify release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Read verified release metadata
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: python scripts/cd.py metadata --tag "$RELEASE_TAG" --github-output "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: prepare
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            rust_target: x86_64-pc-windows-msvc
+          - arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cd-windows-${{ matrix.rust_target }}
+          cache-targets: true
+
+      - name: Build Windows ${{ matrix.arch }}
+        shell: pwsh
+        run: python scripts/build.py windows --arch "${{ matrix.arch }}" --release
+
+      - name: Package Windows ${{ matrix.arch }}
+        shell: pwsh
+        run: python scripts/cd.py package-windows --version "${{ needs.prepare.outputs.version }}" --arch "${{ matrix.arch }}" --target "${{ matrix.rust_target }}"
+
+      - name: Upload Windows ${{ matrix.arch }} artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-fushi-windows-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS arm64 and universal
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cd-macos-universal
+          cache-targets: true
+
+      - name: Build macOS universal and arm64 bundles
+        run: |
+          python scripts/build.py macos --arch universal --release
+          python scripts/build.py macos --arch arm64 --release
+
+      - name: Package macOS bundles
+        run: python scripts/cd.py package-macos --version "${{ needs.prepare.outputs.version }}"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-fushi-macos
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    name: Pocket Fushi Android
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Android build
+        uses: ./.github/actions/setup-android
+        with:
+          rust_targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rust_cache_key: cd-android-universal
+
+      - name: Prepare Android signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: python scripts/cd.py prepare-android-keystore --output "$RUNNER_TEMP/pocket-fushi-release.keystore" --github-env "$GITHUB_ENV"
+
+      - name: Build Android universal release APK
+        run: python scripts/build.py android --variant release --abis arm64-v8a,armeabi-v7a,x86_64
+
+      - name: Sign and verify Pocket Fushi APK
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: python scripts/cd.py sign-android --version "$VERSION" --sdk-root "$ANDROID_SDK_ROOT" --keystore "$ANDROID_KEYSTORE_PATH"
+
+      - name: Upload Pocket Fushi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocket-fushi-android-universal
+          path: dist/pocket-fushi-*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove Android signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/pocket-fushi-release.keystore"
+
+  publish:
+    name: Publish GitHub Release
+    environment: Release
+    needs:
+      - prepare
+      - windows
+      - macos
+      - android
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify release assets
+        run: python scripts/cd.py verify-assets --version "${{ needs.prepare.outputs.version }}" --dist-dir dist
+
+      - name: Write release notes
+        run: python scripts/cd.py write-release-notes --version "${{ needs.prepare.outputs.version }}" --output release-notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/cd.py publish-github --tag "${{ needs.prepare.outputs.tag }}" --version "${{ needs.prepare.outputs.version }}" --dist-dir dist --notes release-notes.md
+
+  deploy_web:
+    name: Deploy website
+    needs:
+      - prepare
+      - publish
+    uses: ./.github/workflows/cd-web.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit

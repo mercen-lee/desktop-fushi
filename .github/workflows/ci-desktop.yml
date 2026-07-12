@@ -1,0 +1,94 @@
+name: CI · Desktop
+
+on:
+  push:
+    branches:
+      - main
+      - android
+    paths:
+      - ".github/workflows/ci-desktop.yml"
+      - "scripts/ci.py"
+      - "scripts/build.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "assets/**"
+  pull_request:
+    paths:
+      - ".github/workflows/ci-desktop.yml"
+      - "scripts/ci.py"
+      - "scripts/build.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "src/**"
+      - "assets/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  windows:
+    name: Windows x64 smoke build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-desktop-windows-x64
+          cache-targets: true
+          cache-on-failure: true
+
+      - name: Build Windows x64
+        shell: pwsh
+        run: python scripts/ci.py desktop --platform windows --arch x64
+
+  macos:
+    name: macOS arm64 smoke build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-desktop-macos-arm64
+          cache-targets: true
+          cache-on-failure: true
+
+      - name: Build macOS arm64
+        run: python scripts/ci.py desktop --platform macos --arch arm64

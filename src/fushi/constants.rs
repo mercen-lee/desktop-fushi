@@ -4,6 +4,10 @@ pub const BODY_HALF_LENGTH: f32 = 158.0;
 pub const BODY_HALF_HEIGHT: f32 = 54.0;
 pub const BODY_CENTER_TO_BELLY: f32 = 51.5;
 pub const BODY_NODE_COUNT: usize = 44;
+pub const SMALL_FUSHI_SCALE: f32 = 0.48;
+pub const NORMAL_FUSHI_SCALE: f32 = 0.62;
+pub const LARGE_FUSHI_SCALE: f32 = 0.80;
+pub const HUGE_FUSHI_SCALE: f32 = 0.98;
 pub const BODY_OUTLINE_ROUGHNESS: f32 = 2.5;
 pub const BELLY_AIR_CORNER_LIFT: f32 = 17.0;
 pub const BELLY_CONTACT_CORNER_LIFT: f32 = 2.5;
@@ -36,6 +40,16 @@ pub const TURN_MIN_YAW_SCALE: f32 = 0.56;
 pub const FREE_GRAVITY: f32 = 1550.0;
 pub const THROW_VELOCITY_SCALE: f32 = 0.70;
 pub const MAX_THROW_VELOCITY: f32 = 2050.0;
+
+pub(crate) const TUMBLER_SHAKING_RESTITUTION: f32 = 0.78;
+pub(crate) const TUMBLER_SHAKING_TANGENT_RETENTION: f32 = 0.90;
+pub(crate) const TUMBLER_SENSOR_IMPULSE_SCALE: f32 = 105.0;
+pub(crate) const TUMBLER_INITIAL_IMPULSE_SCALE: f32 = 1100.0;
+pub(crate) const TUMBLER_MAX_SENSOR_IMPULSE: f32 = 2.0;
+pub(crate) const TUMBLER_STANDARD_GRAVITY: f32 = 9.80665;
+pub(crate) const TUMBLER_GRAVITY_DEAD_ZONE: f32 = 0.45;
+pub(crate) const TUMBLER_INITIAL_KICK_MIN: f32 = 240.0;
+pub(crate) const TUMBLER_INITIAL_KICK_MAX: f32 = 1500.0;
 
 pub const DRAG_CURSOR_FOLLOW_RESPONSE: f32 = 9.6;
 pub const DRAG_CURSOR_MAX_LAG: f32 = 112.0;

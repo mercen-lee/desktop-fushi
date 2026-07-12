@@ -88,6 +88,7 @@ pub struct DesktopEnvironment {
     pub monitors: Vec<MonitorArea>,
     pub virtual_bounds: RectI,
     pub windows: Vec<WindowSurface>,
+    monitor_corner_padding: Option<f32>,
 }
 
 impl DesktopEnvironment {
@@ -141,9 +142,27 @@ impl DesktopEnvironment {
         let width = width.max(1);
         let height = height.max(1);
         let rect = RectI::new(0, 0, width, height);
+        Self::from_screen_work_area(rect, rect)
+    }
+
+    pub fn from_screen_work_area(bounds: RectI, work: RectI) -> Self {
+        let bounds = RectI::new(
+            bounds.left,
+            bounds.top,
+            bounds.right.max(bounds.left + 1),
+            bounds.bottom.max(bounds.top + 1),
+        );
+        let work_left = work.left.clamp(bounds.left, bounds.right - 1);
+        let work_top = work.top.clamp(bounds.top, bounds.bottom - 1);
+        let work = RectI::new(
+            work_left,
+            work_top,
+            work.right.clamp(work_left + 1, bounds.right),
+            work.bottom.clamp(work_top + 1, bounds.bottom),
+        );
         Self::from_monitor_areas(vec![MonitorArea {
-            bounds: rect,
-            work: rect,
+            bounds,
+            work,
             primary: true,
         }])
     }
@@ -164,6 +183,11 @@ impl DesktopEnvironment {
                 })
             })
             .collect();
+        self
+    }
+
+    pub fn with_monitor_corner_padding(mut self, padding: f32) -> Self {
+        self.monitor_corner_padding = Some(padding.clamp(0.58, 1.20));
         self
     }
 
@@ -216,6 +240,7 @@ impl DesktopEnvironment {
             monitors,
             virtual_bounds: vb,
             windows: Vec::new(),
+            monitor_corner_padding: None,
         }
     }
 
@@ -452,7 +477,11 @@ impl DesktopEnvironment {
     ) -> (Vec2, bool, bool) {
         let (lo, hi) = self.tangent_extent(c);
         let coord = Self::tangent_coord(c.kind, center);
-        let edge_pad = if c.is_platform() { 0.36 } else { 0.58 };
+        let edge_pad = if c.is_platform() {
+            0.36
+        } else {
+            self.monitor_corner_padding.unwrap_or(0.58)
+        };
         let min = lo + half_len * edge_pad;
         let max = hi - half_len * edge_pad;
         let crossed_low = coord < min;
@@ -488,31 +517,40 @@ impl DesktopEnvironment {
         let next_kind = Self::next_surface(c.kind, walk_sign);
         let next = SurfaceContact::monitor(c.monitor_index, next_kind);
         let w = self.monitor(c).work;
+        let corner_padding = self.monitor_corner_padding.unwrap_or(0.60);
         let p = match (c.kind, from_high_edge) {
-            (SurfaceKind::Bottom, true) => {
-                Vec2::new(w.right as f32 - center_offset, w.bottom as f32 - half_len * 0.60)
-            }
-            (SurfaceKind::Bottom, false) => {
-                Vec2::new(w.left as f32 + center_offset, w.bottom as f32 - half_len * 0.60)
-            }
-            (SurfaceKind::Top, true) => {
-                Vec2::new(w.left as f32 + center_offset, w.top as f32 + half_len * 0.60)
-            }
-            (SurfaceKind::Top, false) => {
-                Vec2::new(w.right as f32 - center_offset, w.top as f32 + half_len * 0.60)
-            }
-            (SurfaceKind::Right, true) => {
-                Vec2::new(w.right as f32 - half_len * 0.60, w.top as f32 + center_offset)
-            }
-            (SurfaceKind::Right, false) => {
-                Vec2::new(w.right as f32 - half_len * 0.60, w.bottom as f32 - center_offset)
-            }
-            (SurfaceKind::Left, true) => {
-                Vec2::new(w.left as f32 + half_len * 0.60, w.bottom as f32 - center_offset)
-            }
-            (SurfaceKind::Left, false) => {
-                Vec2::new(w.left as f32 + half_len * 0.60, w.top as f32 + center_offset)
-            }
+            (SurfaceKind::Bottom, true) => Vec2::new(
+                w.right as f32 - center_offset,
+                w.bottom as f32 - half_len * corner_padding,
+            ),
+            (SurfaceKind::Bottom, false) => Vec2::new(
+                w.left as f32 + center_offset,
+                w.bottom as f32 - half_len * corner_padding,
+            ),
+            (SurfaceKind::Top, true) => Vec2::new(
+                w.left as f32 + center_offset,
+                w.top as f32 + half_len * corner_padding,
+            ),
+            (SurfaceKind::Top, false) => Vec2::new(
+                w.right as f32 - center_offset,
+                w.top as f32 + half_len * corner_padding,
+            ),
+            (SurfaceKind::Right, true) => Vec2::new(
+                w.right as f32 - half_len * corner_padding,
+                w.top as f32 + center_offset,
+            ),
+            (SurfaceKind::Right, false) => Vec2::new(
+                w.right as f32 - half_len * corner_padding,
+                w.bottom as f32 - center_offset,
+            ),
+            (SurfaceKind::Left, true) => Vec2::new(
+                w.left as f32 + half_len * corner_padding,
+                w.bottom as f32 - center_offset,
+            ),
+            (SurfaceKind::Left, false) => Vec2::new(
+                w.left as f32 + half_len * corner_padding,
+                w.top as f32 + center_offset,
+            ),
         };
 
         let p = match next.kind {
