@@ -23,6 +23,8 @@ const iconMarkup = {
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.1 10.7 4v7.4H3V5.1Zm0 7.5h7.7V20L3 18.9v-6.3Zm8.9-8.8L21 2.5v8.9h-9.1V3.8Zm0 8.8H21v8.9l-9.1-1.3v-7.6Z"/></svg>',
   apple:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 13.1c0-2.2 1.8-3.2 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8s-1.8-.8-2.9-.8c-1.5 0-2.9.9-3.7 2.2-1.6 2.8-.4 6.9 1.1 9.1.8 1.1 1.7 2.3 2.9 2.3 1.1 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2.1-1.1 2.8-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.7-1-2.8-3.8ZM14.6 6.6c.6-.7 1-1.8.9-2.8-.9 0-2 .6-2.7 1.3-.6.7-1 1.7-.9 2.7 1 0 2-.5 2.7-1.2Z"/></svg>',
+  android:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 15.3a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm-11 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm11.4-6 2-3.4a.4.4 0 0 0-.2-.6.4.4 0 0 0-.5.2L17.1 9A12.3 12.3 0 0 0 12 7.9c-1.9 0-3.6.4-5.1 1.1L4.8 5.5a.4.4 0 0 0-.5-.2.4.4 0 0 0-.2.6l2 3.4A10.8 10.8 0 0 0 0 18.8h24a10.8 10.8 0 0 0-6.1-9.5Z"/></svg>',
 };
 
 function dpr() {
@@ -118,7 +120,10 @@ function choosePlatform() {
   const ua = navigator.userAgent.toLowerCase();
   const platform = (navigator.userAgentData?.platform || navigator.platform || "").toLowerCase();
   const isAppleMobile = /iphone|ipad|ipod/.test(ua) || (platform.includes("mac") && navigator.maxTouchPoints > 1);
-  if (ua.includes("android") || isAppleMobile || platform.includes("linux") || platform.includes("chrome os")) {
+  if (ua.includes("android")) {
+    return "android-universal";
+  }
+  if (isAppleMobile || platform.includes("linux") || platform.includes("chrome os")) {
     return null;
   }
   if (platform.includes("mac")) {
@@ -141,7 +146,8 @@ async function refinePlatformGuess() {
     const hints = await navigator.userAgentData.getHighEntropyValues(["architecture", "platform"]);
     const platform = (hints.platform || "").toLowerCase();
     const architecture = (hints.architecture || "").toLowerCase();
-    if (platform.includes("android") || platform.includes("linux") || platform.includes("chrome os")) return null;
+    if (platform.includes("android")) return "android-universal";
+    if (platform.includes("linux") || platform.includes("chrome os")) return null;
     if (platform.includes("mac")) {
       return architecture.includes("arm") ? "macos-arm64" : "macos-universal";
     }
@@ -158,7 +164,7 @@ function setBrowserSupport(isSupported) {
   stage.dataset.browserSupported = String(isSupported);
   platformStatus.hidden = isSupported;
   if (!isSupported) {
-    platformStatus.textContent = `This platform is not supported in Desktop Fushi ${releaseData.version}. Windows and macOS builds are available.`;
+    platformStatus.textContent = `This platform is not supported in Fushi ${releaseData.version}. Windows, macOS, and Android builds are available.`;
   }
 }
 

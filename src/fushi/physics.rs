@@ -33,6 +33,11 @@ struct TurnState {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct TumblerState {
+    shaking: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct TinyRng {
     state: u64,
 }
@@ -106,6 +111,45 @@ fn crawl_reach_collapse_per_phase(phase: f32) -> f32 {
 
 fn approach_angle(current: f32, target: f32, max_delta: f32) -> f32 {
     wrap_angle(current + wrap_angle(target - current).clamp(-max_delta, max_delta))
+}
+
+fn finite_vec_or(value: Vec2, fallback: Vec2) -> Vec2 {
+    if value.x.is_finite() && value.y.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn finite_scalar_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn ordered_container_limits(min: f32, max: f32) -> (f32, f32) {
+    if min <= max {
+        (min, max)
+    } else {
+        let midpoint = (min + max) * 0.5;
+        (midpoint, midpoint)
+    }
+}
+
+fn projected_sensor_gravity(gravity_world: Vec2) -> (Vec2, Option<Vec2>) {
+    let gravity_world = finite_vec_or(gravity_world, Vec2::ZERO);
+    let magnitude = gravity_world.length();
+    if !magnitude.is_finite() || magnitude <= TUMBLER_GRAVITY_DEAD_ZONE {
+        return (Vec2::ZERO, None);
+    }
+
+    let direction = gravity_world * (1.0 / magnitude);
+    let projected_strength = ((magnitude - TUMBLER_GRAVITY_DEAD_ZONE)
+        / (TUMBLER_STANDARD_GRAVITY - TUMBLER_GRAVITY_DEAD_ZONE))
+        .clamp(0.0, 1.0);
+    (direction * (FREE_GRAVITY * projected_strength), Some(direction))
 }
 
 fn content_bound_anchors() -> [Vec2; 9] {
@@ -190,6 +234,8 @@ pub struct FushiBody {
     surface_transition_from_normal: Vec2,
     surface_transition_from_tangent: Vec2,
     platform_lost_timer: f32,
+    sensor_gravity_world: Option<Vec2>,
+    tumbler: Option<TumblerState>,
     turn: Option<TurnState>,
     rng: TinyRng,
 }
@@ -266,6 +312,8 @@ impl FushiBody {
             surface_transition_from_normal: normal,
             surface_transition_from_tangent: tangent,
             platform_lost_timer: 0.0,
+            sensor_gravity_world: None,
+            tumbler: None,
             turn: None,
             rng: TinyRng::new(0x4655_5348_4932_4432),
         };
@@ -289,6 +337,7 @@ impl FushiBody {
         self.bank_velocity = 0.0;
         self.surface_transition = 0.0;
         self.platform_lost_timer = 0.0;
+        self.tumbler = None;
         self.edge_squash = 0.0;
         self.drag_lift = 0.0;
         self.crawl_drive = 1.0;
@@ -370,6 +419,7 @@ impl FushiBody {
         self.bank_velocity = 0.0;
         self.surface_transition = 0.0;
         self.platform_lost_timer = 0.0;
+        self.tumbler = None;
         self.edge_squash = env.screen_edge_pinch_amount(contact, self.body_center_to_belly());
         self.drag_lift = 0.0;
         self.grab_node = None;
@@ -417,6 +467,7 @@ impl FushiBody {
     }
 
     fn begin_drag_at(&mut self, world: Vec2) -> bool {
+        self.tumbler = None;
         let grab_local = self.clamp_drag_grab_local(self.world_to_local(world));
         let grab_node = self.mesh.closest_node(world);
         self.mode = MotionMode::Dragged;
@@ -492,8 +543,8 @@ impl FushiBody {
     }
 
     pub fn apply_external_shake(&mut self, acceleration_local: Vec2, intensity: f32, dt: f32) {
-        // Hook for mobile/embedded front-ends.  The Android overlay uses
-        // accelerometer impulses as if the phone were a container around Fushi.
+        // Existing local-space impulse hook used by the web front-end. Android's
+        // conservative, gated sensor behavior has a separate screen-space path.
         let dt = dt.clamp(0.001, 0.060);
         let intensity = intensity.clamp(0.0, 1.0);
         if intensity <= 0.001 {
@@ -514,6 +565,115 @@ impl FushiBody {
         if intensity > 0.68 {
             self.panic_timer = self.panic_timer.max(0.10 + intensity * 0.20);
         }
+    }
+
+    fn motion_gravity(&self) -> (Vec2, Option<Vec2>) {
+        self.sensor_gravity_world
+            .map(projected_sensor_gravity)
+            .unwrap_or((Vec2::Y * FREE_GRAVITY, Some(Vec2::Y)))
+    }
+
+    /// Applies a phone/container motion frame in screen coordinates.
+    ///
+    /// `impulse_world` is the detector-integrated apparent velocity change (m/s); gravity is the
+    /// projected content acceleration (m/s²). Positive Y points down the screen. Valid gravity
+    /// updates continuously; only shake impulses and tumbler entry require the detector gate.
+    pub(crate) fn apply_container_motion(
+        &mut self,
+        impulse_world: Vec2,
+        gravity_world: Vec2,
+        intensity: f32,
+        sensor_available: bool,
+        gravity_valid: bool,
+        triggered: bool,
+        gate_open: bool,
+    ) {
+        if !sensor_available {
+            self.sensor_gravity_world = None;
+            self.tumbler = None;
+            return;
+        }
+        if gravity_valid {
+            self.sensor_gravity_world = Some(finite_vec_or(gravity_world, Vec2::ZERO).clamp_len(14.0));
+        } else {
+            self.sensor_gravity_world = None;
+        }
+
+        if self.mode == MotionMode::Dragged {
+            self.tumbler = None;
+            return;
+        }
+
+        let impulse_world = finite_vec_or(impulse_world, Vec2::ZERO).clamp_len(TUMBLER_MAX_SENSOR_IMPULSE);
+        let intensity = if intensity.is_finite() {
+            intensity.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if triggered && self.sensor_gravity_world.is_some() {
+            self.begin_tumbler(impulse_world, intensity, gate_open);
+        }
+
+        let Some(tumbler) = self.tumbler.as_mut() else {
+            return;
+        };
+
+        tumbler.shaking = gate_open;
+        if gate_open {
+            let inertial_impulse =
+                impulse_world * (TUMBLER_SENSOR_IMPULSE_SCALE * lerp(0.35, 1.0, intensity));
+            self.velocity += inertial_impulse;
+            self.velocity = finite_vec_or(self.velocity, Vec2::ZERO).clamp_len(MAX_THROW_VELOCITY);
+            self.bank_velocity += impulse_world.x * 0.12 * intensity;
+            self.bank_velocity = clampf(self.bank_velocity, -10.0, 10.0);
+        }
+    }
+
+    fn begin_tumbler(&mut self, impulse_world: Vec2, intensity: f32, gate_open: bool) {
+        let already_active = self.tumbler.is_some();
+        let outward = self.normal.normalized_or(Vec2::Y);
+        let inward = -outward;
+        let inertial_direction = impulse_world.normalized_or(inward);
+        let kick_speed =
+            (impulse_world.length() * TUMBLER_INITIAL_IMPULSE_SCALE * lerp(0.78, 1.15, intensity))
+                .clamp(TUMBLER_INITIAL_KICK_MIN, TUMBLER_INITIAL_KICK_MAX);
+        let inward_speed = lerp(220.0, 430.0, intensity);
+        let mut kick = inertial_direction * kick_speed + inward * inward_speed;
+        let minimum_inward = lerp(190.0, 370.0, intensity);
+        let inward_component = kick.dot(inward);
+        if inward_component < minimum_inward {
+            kick += inward * (minimum_inward - inward_component);
+        }
+
+        if !already_active {
+            let kin = self.kinematics();
+            self.mesh
+                .detach_from_surface(&kin, outward, (DRAG_DETACH_LIFT * 1.35) * self.scale.max(0.2));
+            self.velocity *= 0.22;
+        }
+        self.velocity += kick * if already_active { 0.58 } else { 1.0 };
+        self.velocity = finite_vec_or(self.velocity, inward * minimum_inward).clamp_len(MAX_THROW_VELOCITY);
+        self.mode = MotionMode::Flying;
+        self.surface = None;
+        self.platform_lost_timer = 0.0;
+        self.surface_transition = 0.0;
+        self.edge_squash = 0.0;
+        self.turn = None;
+
+        let spin_direction = outward.cross(inertial_direction) + inertial_direction.x * 0.45;
+        self.bank_velocity = clampf(
+            self.bank_velocity + spin_direction * lerp(3.2, 7.0, intensity),
+            -10.0,
+            10.0,
+        );
+        self.impact_squash = self.impact_squash.max(lerp(0.20, 0.42, intensity));
+        self.stress = self.stress.max(lerp(0.55, 0.92, intensity));
+        self.dizziness = self.dizziness.max(lerp(0.62, 1.0, intensity));
+        self.dizzy_reaction_timer = self.dizzy_reaction_timer.max(lerp(0.82, 1.52, intensity));
+        self.panic_timer = self.panic_timer.max(lerp(0.32, 0.78, intensity));
+        self.sleepiness = 0.0;
+
+        self.tumbler = Some(TumblerState { shaking: gate_open });
     }
 
     pub fn step(&mut self, dt: f32, env: &DesktopEnvironment) {
@@ -567,6 +727,9 @@ impl FushiBody {
             None
         };
         self.mesh.step(dt, &kin, grab, contact);
+        if self.tumbler.is_some() {
+            self.constrain_tumbler_body(env);
+        }
     }
 
     pub fn hit_test(&self, world: Vec2, extra: f32) -> bool {
@@ -1129,16 +1292,26 @@ impl FushiBody {
     }
 
     fn step_flying(&mut self, dt: f32, env: &DesktopEnvironment) {
-        self.velocity += Vec2::new(0.0, FREE_GRAVITY) * dt;
+        if self.tumbler.is_some() {
+            self.step_tumbler(dt, env);
+            return;
+        }
+
+        let (gravity_acceleration, gravity_direction) = self.motion_gravity();
+        self.velocity += gravity_acceleration * dt;
         self.center += self.velocity * dt;
-        self.normal = vlerp(self.normal, Vec2::Y, exp_decay(0.9, dt)).normalized_or(Vec2::Y);
-        let tangent_candidate = self.normal.perp_left().normalized_or(Vec2::X);
-        let tangent_target = if tangent_candidate.dot(self.tangent) < 0.0 {
-            -tangent_candidate
-        } else {
-            tangent_candidate
-        };
-        self.tangent = vlerp(self.tangent, tangent_target, exp_decay(1.2, dt)).normalized_or(tangent_target);
+        if let Some(gravity_direction) = gravity_direction {
+            self.normal =
+                vlerp(self.normal, gravity_direction, exp_decay(0.9, dt)).normalized_or(gravity_direction);
+            let tangent_candidate = self.normal.perp_left().normalized_or(Vec2::X);
+            let tangent_target = if tangent_candidate.dot(self.tangent) < 0.0 {
+                -tangent_candidate
+            } else {
+                tangent_candidate
+            };
+            self.tangent =
+                vlerp(self.tangent, tangent_target, exp_decay(1.2, dt)).normalized_or(tangent_target);
+        }
         self.bank_velocity += -self.bank * (BANK_RESTORE * 0.72) * dt;
         self.bank_velocity *= (-1.2 * dt).exp();
         self.bank = wrap_angle(self.bank + self.bank_velocity * dt);
@@ -1155,6 +1328,279 @@ impl FushiBody {
         }
     }
 
+    fn step_tumbler(&mut self, dt: f32, env: &DesktopEnvironment) {
+        let shaking = self.tumbler.expect("tumbler state checked").shaking;
+        let (gravity_acceleration, gravity_direction) = self.motion_gravity();
+
+        self.velocity += gravity_acceleration * dt;
+        self.velocity = finite_vec_or(self.velocity, Vec2::ZERO).clamp_len(MAX_THROW_VELOCITY);
+
+        if let Some(gravity_direction) = gravity_direction {
+            self.normal =
+                vlerp(self.normal, gravity_direction, exp_decay(1.7, dt)).normalized_or(gravity_direction);
+            let tangent_candidate = self.normal.perp_left().normalized_or(Vec2::X);
+            let tangent_target = if tangent_candidate.dot(self.tangent) < 0.0 {
+                -tangent_candidate
+            } else {
+                tangent_candidate
+            };
+            self.tangent =
+                vlerp(self.tangent, tangent_target, exp_decay(2.0, dt)).normalized_or(tangent_target);
+        }
+        self.bank_velocity += -self.bank.sin() * (BANK_RESTORE * 0.16) * dt;
+        self.bank_velocity *= (-0.46 * dt).exp();
+        self.bank_velocity = clampf(self.bank_velocity, -10.0, 10.0);
+        self.bank = wrap_angle(self.bank + self.bank_velocity * dt);
+
+        // Capture the current pose's real occupied extents before advancing the rigid center.
+        // The mesh is intentionally one soft-body solve behind that center, so measuring after
+        // translation would count ordinary frame motion as extra body width.
+        let (left_extent, top_extent, right_extent, bottom_extent) = self.tumbler_extents();
+        let monitor_index = env.monitor_index_for_point(self.center);
+        let work = env.monitors[monitor_index].work;
+        let raw_min_x = work.left as f32 + left_extent;
+        let raw_max_x = work.right as f32 - right_extent;
+        let raw_min_y = work.top as f32 + top_extent;
+        let raw_max_y = work.bottom as f32 - bottom_extent;
+        let (min_x, max_x) = ordered_container_limits(raw_min_x, raw_max_x);
+        let (min_y, max_y) = ordered_container_limits(raw_min_y, raw_max_y);
+
+        let old_center = self.center;
+        let incoming = self.velocity;
+        self.center += self.velocity * dt;
+
+        let mut hit_x = false;
+        let mut hit_y = false;
+        let mut bounce_x = false;
+        let mut bounce_y = false;
+        let mut inward_normal = Vec2::ZERO;
+        let mut settle_kind = SurfaceKind::Bottom;
+        let mut strongest_impact = 0.0_f32;
+
+        if self.center.x < min_x {
+            self.center.x = min_x;
+            hit_x = true;
+            bounce_x = incoming.x < 0.0;
+            inward_normal += Vec2::X;
+            settle_kind = SurfaceKind::Left;
+            strongest_impact = incoming.x.abs();
+        } else if self.center.x > max_x {
+            self.center.x = max_x;
+            hit_x = true;
+            bounce_x = incoming.x > 0.0;
+            inward_normal -= Vec2::X;
+            settle_kind = SurfaceKind::Right;
+            strongest_impact = incoming.x.abs();
+        }
+
+        if self.center.y < min_y {
+            self.center.y = min_y;
+            hit_y = true;
+            bounce_y = incoming.y < 0.0;
+            inward_normal += Vec2::Y;
+            if incoming.y.abs() >= strongest_impact {
+                settle_kind = SurfaceKind::Top;
+                strongest_impact = incoming.y.abs();
+            }
+        } else if self.center.y > max_y {
+            self.center.y = max_y;
+            hit_y = true;
+            bounce_y = incoming.y > 0.0;
+            inward_normal -= Vec2::Y;
+            if incoming.y.abs() >= strongest_impact {
+                settle_kind = SurfaceKind::Bottom;
+                strongest_impact = incoming.y.abs();
+            }
+        }
+
+        let correction = self.center - (old_center + incoming * dt);
+        self.translate_mesh(correction);
+
+        if hit_x || hit_y {
+            // The deliberate-shake gate is the exact boundary between the two behaviours:
+            // while it is open, the phone is an energetic tumbler; once it closes, the next
+            // real wall contact is a landing. Never feed a low-speed reflection back into the
+            // body after shaking stops, otherwise it can visibly chatter in place.
+            if !shaking {
+                self.settle_tumbler_on_wall(monitor_index, settle_kind, strongest_impact, env);
+                return;
+            }
+
+            let reflected_x = if bounce_x {
+                -incoming.x * TUMBLER_SHAKING_RESTITUTION
+            } else if bounce_y {
+                incoming.x * TUMBLER_SHAKING_TANGENT_RETENTION
+            } else {
+                incoming.x
+            };
+            let reflected_y = if bounce_y {
+                -incoming.y * TUMBLER_SHAKING_RESTITUTION
+            } else if bounce_x {
+                incoming.y * TUMBLER_SHAKING_TANGENT_RETENTION
+            } else {
+                incoming.y
+            };
+            self.velocity =
+                finite_vec_or(Vec2::new(reflected_x, reflected_y), Vec2::ZERO).clamp_len(MAX_THROW_VELOCITY);
+
+            if bounce_x || bounce_y {
+                let reaction_fallback = gravity_direction
+                    .map(|direction| -direction)
+                    .unwrap_or_else(|| -self.normal.normalized_or(Vec2::Y));
+                self.react_to_tumbler_collision(
+                    inward_normal.normalized_or(reaction_fallback),
+                    strongest_impact,
+                );
+            }
+        }
+
+        if !env.virtual_bounds.inflate(900).contains(self.center)
+            || !self.center.x.is_finite()
+            || !self.center.y.is_finite()
+        {
+            self.reset_to_safe_surface(env);
+        }
+    }
+
+    fn tumbler_extents(&self) -> (f32, f32, f32, f32) {
+        // Ears and the long tail are secondary soft appendages. Using their conservative render
+        // anchors as a rigid collision hull makes the body rebound from visibly empty space.
+        // Collide the actual soft-body outline instead, with only a small fur/stroke allowance.
+        let bounds = self.tumbler_collision_bounds();
+        let fallback_x = self.body_half_length().max(8.0);
+        let fallback_y = (BODY_HALF_HEIGHT * self.scale.max(0.2)).max(8.0);
+        let left = (self.center.x - bounds.left).max(8.0);
+        let top = (self.center.y - bounds.top).max(8.0);
+        let right = (bounds.right - self.center.x).max(8.0);
+        let bottom = (bounds.bottom - self.center.y).max(8.0);
+        (
+            finite_scalar_or(left, fallback_x),
+            finite_scalar_or(top, fallback_y),
+            finite_scalar_or(right, fallback_x),
+            finite_scalar_or(bottom, fallback_y),
+        )
+    }
+
+    fn tumbler_collision_bounds(&self) -> RectF {
+        let visual_margin = (BODY_OUTLINE_ROUGHNESS + 3.0) * self.scale.max(0.2);
+        if let Some((min, max)) = self.mesh.bounds() {
+            return RectF::new(
+                min.x - visual_margin,
+                min.y - visual_margin,
+                max.x + visual_margin,
+                max.y + visual_margin,
+            );
+        }
+
+        let mut min = self.center;
+        let mut max = self.center;
+        for local in [
+            Vec2::new(-BODY_HALF_LENGTH, -BODY_HALF_HEIGHT),
+            Vec2::new(BODY_HALF_LENGTH, -BODY_HALF_HEIGHT),
+            Vec2::new(-BODY_HALF_LENGTH, BODY_CENTER_TO_BELLY),
+            Vec2::new(BODY_HALF_LENGTH, BODY_CENTER_TO_BELLY),
+        ] {
+            let point = self.local_to_world(local);
+            min = min.min(point);
+            max = max.max(point);
+        }
+        RectF::new(
+            min.x - visual_margin,
+            min.y - visual_margin,
+            max.x + visual_margin,
+            max.y + visual_margin,
+        )
+    }
+
+    fn constrain_tumbler_body(&mut self, env: &DesktopEnvironment) {
+        let monitor_index = env.monitor_index_for_point(self.center);
+        let work = env.monitors[monitor_index].work;
+        let bounds = self.tumbler_collision_bounds();
+        let work_width = work.width() as f32;
+        let work_height = work.height() as f32;
+
+        let dx = if bounds.width() > work_width {
+            (work.left + work.right) as f32 * 0.5 - (bounds.left + bounds.right) * 0.5
+        } else if bounds.left < work.left as f32 {
+            work.left as f32 - bounds.left
+        } else if bounds.right > work.right as f32 {
+            work.right as f32 - bounds.right
+        } else {
+            0.0
+        };
+        let dy = if bounds.height() > work_height {
+            (work.top + work.bottom) as f32 * 0.5 - (bounds.top + bounds.bottom) * 0.5
+        } else if bounds.top < work.top as f32 {
+            work.top as f32 - bounds.top
+        } else if bounds.bottom > work.bottom as f32 {
+            work.bottom as f32 - bounds.bottom
+        } else {
+            0.0
+        };
+        let correction = finite_vec_or(Vec2::new(dx, dy), Vec2::ZERO);
+        self.center += correction;
+        self.translate_mesh(correction);
+    }
+
+    fn react_to_tumbler_collision(&mut self, inward_normal: Vec2, impact: f32) {
+        let impact = if impact.is_finite() {
+            impact.clamp(0.0, MAX_THROW_VELOCITY)
+        } else {
+            0.0
+        };
+        let amount = smoothstep(180.0, 1750.0, impact);
+        self.bank_velocity += inward_normal.cross(self.velocity) * 0.0042;
+        self.bank_velocity += self.velocity.normalized_or(Vec2::X).x * amount * 1.4;
+        self.bank_velocity = clampf(self.bank_velocity, -10.0, 10.0);
+        self.impact_squash = self.impact_squash.max(0.12 + amount * 0.36);
+        self.stress = clampf(self.stress + 0.10 + amount * 0.34, 0.0, 1.0);
+        self.anger = clampf(self.anger + amount * 0.12, 0.0, 1.0);
+        self.dizziness = clampf(self.dizziness + 0.12 + amount * 0.38, 0.0, 1.0);
+        self.dizzy_reaction_timer = self.dizzy_reaction_timer.max(0.48 + amount * 0.92);
+        if impact > 920.0 {
+            self.panic_timer = self.panic_timer.max(0.30 + amount * 0.42);
+        } else {
+            self.surprise_timer = self.surprise_timer.max(0.16 + amount * 0.22);
+        }
+
+        let radius = self.content_radius().max(1.0);
+        for node in &mut self.mesh.nodes {
+            let wallward = (-(node.pos - self.center).dot(inward_normal) / radius).clamp(0.0, 1.0);
+            let contact_weight = smoothstep(0.12, 0.88, wallward);
+            node.vel += inward_normal * (impact * (0.035 + contact_weight * 0.13));
+        }
+    }
+
+    fn settle_tumbler_on_wall(
+        &mut self,
+        monitor_index: usize,
+        kind: SurfaceKind,
+        impact: f32,
+        env: &DesktopEnvironment,
+    ) {
+        let contact = SurfaceContact::monitor(monitor_index, kind);
+        let (lo, hi) = env.tangent_extent(contact);
+        let half_len = self.body_half_length();
+        let center_offset = self.body_center_to_belly();
+        let (normal_snap, _, _) = env.constrain_to_surface(contact, self.center, half_len, center_offset);
+        let normal_coordinate = DesktopEnvironment::tangent_coord(kind, normal_snap);
+        // The body rotates through a surface transition after landing. Reserve its true radial
+        // content extent, not only the current pose's tangent AABB, so ears and tail cannot sweep
+        // through a corner while that transition completes.
+        let tangent_radius = finite_scalar_or(self.content_radius(), half_len).max(half_len);
+        let min = lo + tangent_radius;
+        let max = hi - tangent_radius;
+        let coordinate = normal_coordinate;
+        let coordinate = if min <= max {
+            clampf(coordinate, min, max)
+        } else {
+            (lo + hi) * 0.5
+        };
+        let snapped = env.point_from_tangent(contact, coordinate, center_offset);
+        self.tumbler = None;
+        self.land_on_surface(contact, snapped, impact, env);
+    }
+
     fn land_on_surface(
         &mut self,
         contact: SurfaceContact,
@@ -1162,6 +1608,7 @@ impl FushiBody {
         impact: f32,
         env: &DesktopEnvironment,
     ) {
+        self.tumbler = None;
         self.surface = Some(contact);
         self.mode = MotionMode::Attached;
         self.platform_lost_timer = 0.0;
@@ -1806,6 +2253,676 @@ impl FushiBody {
                 self.previous_expression = self.expression;
                 self.expression_transition = 1.0;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math::RectI;
+
+    const TEST_DT: f32 = 1.0 / 60.0;
+
+    fn test_environment() -> DesktopEnvironment {
+        DesktopEnvironment::from_screen_work_area(RectI::new(0, 0, 1400, 1000), RectI::new(30, 40, 1370, 960))
+    }
+
+    fn trigger_tumbler(body: &mut FushiBody) {
+        body.apply_container_motion(
+            Vec2::new(0.55, -0.08),
+            Vec2::new(0.0, 9.81),
+            0.82,
+            true,
+            true,
+            true,
+            true,
+        );
+    }
+
+    fn centered_tumbler(env: &DesktopEnvironment) -> FushiBody {
+        let mut body = FushiBody::new(env);
+        trigger_tumbler(&mut body);
+        let work = env.monitors[0].work;
+        let target = Vec2::new(
+            (work.left + work.right) as f32 * 0.5,
+            (work.top + work.bottom) as f32 * 0.5,
+        );
+        body.translate_world(target - body.center);
+        body.velocity = Vec2::ZERO;
+        body
+    }
+
+    #[test]
+    fn weak_container_motion_has_no_effect_before_trigger() {
+        let env = test_environment();
+        let mut candidate = FushiBody::new(&env);
+        let mut control = candidate.clone();
+
+        for frame in 0..(60 * 60) {
+            let phase = frame as f32 * 0.13;
+            candidate.apply_container_motion(
+                Vec2::new(phase.sin() * 1.1, phase.cos() * 0.9),
+                Vec2::new(3.0, 9.2),
+                0.24,
+                true,
+                true,
+                false,
+                true,
+            );
+            candidate.step(TEST_DT, &env);
+            control.step(TEST_DT, &env);
+        }
+
+        assert_eq!(candidate.mode, control.mode);
+        assert_eq!(candidate.center, control.center);
+        assert_eq!(candidate.velocity, control.velocity);
+        assert_eq!(candidate.bank, control.bank);
+        assert!(candidate.tumbler.is_none());
+    }
+
+    #[test]
+    fn strong_trigger_detaches_from_surface() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+
+        trigger_tumbler(&mut body);
+
+        assert_eq!(body.mode, MotionMode::Flying);
+        assert!(body.surface.is_none());
+        assert!(body.tumbler.is_some());
+        assert!(body.velocity.length() >= TUMBLER_INITIAL_KICK_MIN * 0.75);
+        assert!(body.velocity.y < 0.0, "bottom-surface kick must point inward");
+        assert!(body.stress >= 0.55);
+        assert!(body.dizziness >= 0.62);
+    }
+
+    #[test]
+    fn faster_shake_creates_a_larger_body_velocity_change() {
+        let env = test_environment();
+        let mut slow = FushiBody::new(&env);
+        let mut fast = slow.clone();
+
+        slow.apply_container_motion(
+            Vec2::X * 0.25,
+            Vec2::Y * TUMBLER_STANDARD_GRAVITY,
+            0.70,
+            true,
+            true,
+            true,
+            true,
+        );
+        fast.apply_container_motion(
+            Vec2::X,
+            Vec2::Y * TUMBLER_STANDARD_GRAVITY,
+            0.70,
+            true,
+            true,
+            true,
+            true,
+        );
+
+        assert!(
+            fast.velocity.length() > slow.velocity.length() * 1.8,
+            "slow={} fast={}",
+            slow.velocity.length(),
+            fast.velocity.length()
+        );
+    }
+
+    #[test]
+    fn drag_cancels_and_ignores_tumbler_input() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        assert!(body.tumbler.is_some());
+
+        let drag_point = body.center;
+        assert!(body.begin_drag_unchecked(drag_point));
+        let velocity_before = body.velocity;
+        assert_eq!(body.mode, MotionMode::Dragged);
+        assert!(body.tumbler.is_none());
+
+        trigger_tumbler(&mut body);
+
+        assert_eq!(body.mode, MotionMode::Dragged);
+        assert_eq!(body.velocity, velocity_before);
+        assert!(body.tumbler.is_none());
+    }
+
+    #[test]
+    fn active_tumbler_bounces_without_landing() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        let (left_extent, _, _, _) = body.tumbler_extents();
+        let left_limit = env.monitors[0].work.left as f32 + left_extent;
+        body.translate_world(Vec2::new(left_limit + 2.0 - body.center.x, -180.0));
+        body.velocity = Vec2::new(-1100.0, -90.0);
+
+        body.step(TEST_DT, &env);
+
+        assert_eq!(body.mode, MotionMode::Flying);
+        assert!(body.surface.is_none());
+        assert!(body.tumbler.is_some());
+        assert!(body.velocity.x > 0.0);
+        assert!(body.impact_squash >= 0.1);
+    }
+
+    #[test]
+    fn tumbler_wall_bounce_uses_configured_normal_and_tangent_retention() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        let (left_extent, _, _, _) = body.tumbler_extents();
+        let left_limit = env.monitors[0].work.left as f32 + left_extent;
+        body.translate_world(Vec2::new(left_limit + 1.0 - body.center.x, -180.0));
+        body.velocity = Vec2::new(-1000.0, 300.0);
+
+        body.step(TEST_DT, &env);
+
+        let incoming_tangent = 300.0 + FREE_GRAVITY * TEST_DT;
+        assert!((body.velocity.x - 1000.0 * TUMBLER_SHAKING_RESTITUTION).abs() < 0.1);
+        assert!((body.velocity.y - incoming_tangent * TUMBLER_SHAKING_TANGENT_RETENTION).abs() < 0.1);
+        assert_eq!(body.mode, MotionMode::Flying);
+    }
+
+    #[test]
+    fn open_shake_gate_keeps_even_a_low_speed_wall_contact_bouncing() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        let (left_extent, _, _, _) = body.tumbler_extents();
+        let left_limit = env.monitors[0].work.left as f32 + left_extent;
+        body.translate_world(Vec2::new(left_limit + 0.5 - body.center.x, -180.0));
+        body.velocity = Vec2::new(-80.0, 15.0);
+
+        body.step(TEST_DT, &env);
+
+        assert_eq!(body.mode, MotionMode::Flying);
+        assert!(body.surface.is_none());
+        assert!(body.tumbler.expect("open gate").shaking);
+        assert!(body.velocity.x > 0.0, "vx={}", body.velocity.x);
+    }
+
+    #[test]
+    fn appendage_render_anchors_do_not_create_an_invisible_tumbler_wall() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        let content = body.content_bounds();
+        let collision = body.tumbler_collision_bounds();
+        assert!(
+            collision.top - content.top > 40.0 * body.scale,
+            "ear/tail bounds must not pad the rigid wall: content={} collision={}",
+            content.top,
+            collision.top
+        );
+
+        let (_, top_extent, _, _) = body.tumbler_extents();
+        let top_limit = env.monitors[0].work.top as f32 + top_extent;
+        body.translate_world(Vec2::new(0.0, top_limit + 1.0 - body.center.y));
+        body.velocity = Vec2::new(80.0, -900.0);
+        body.step(TEST_DT, &env);
+
+        assert!(body.velocity.y > 0.0);
+        assert_eq!(body.mode, MotionMode::Flying);
+    }
+
+    #[test]
+    fn closed_shake_gate_attaches_on_next_wall_without_reflection() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        let (left_extent, _, _, _) = body.tumbler_extents();
+        let left_limit = env.monitors[0].work.left as f32 + left_extent;
+        body.translate_world(Vec2::new(left_limit + 1.0 - body.center.x, -180.0));
+        body.velocity = Vec2::new(-1100.0, 120.0);
+
+        body.apply_container_motion(Vec2::ZERO, Vec2::Y * 9.81, 0.0, true, true, false, false);
+        body.step(TEST_DT, &env);
+
+        assert_eq!(body.mode, MotionMode::Attached);
+        assert_eq!(body.surface.expect("wall attachment").kind, SurfaceKind::Left);
+        assert!(body.tumbler.is_none());
+    }
+
+    #[test]
+    fn closed_shake_gate_remains_flying_until_an_actual_wall_contact() {
+        let env = test_environment();
+        let mut body = centered_tumbler(&env);
+        body.velocity = Vec2::new(120.0, 0.0);
+        body.apply_container_motion(Vec2::ZERO, Vec2::Y * 9.81, 0.0, true, true, false, false);
+
+        body.step(TEST_DT, &env);
+
+        assert_eq!(body.mode, MotionMode::Flying);
+        assert!(body.surface.is_none());
+        assert!(!body.tumbler.expect("closed gate in midair").shaking);
+    }
+
+    #[test]
+    fn continuously_open_shake_gate_keeps_wall_reflection_active() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+
+        for _ in 0..(60 * 3) {
+            body.apply_container_motion(
+                Vec2::new(0.12, -0.03),
+                Vec2::Y * 9.81,
+                0.55,
+                true,
+                true,
+                false,
+                true,
+            );
+            body.step(TEST_DT, &env);
+            assert_eq!(body.mode, MotionMode::Flying);
+            assert!(body.tumbler.is_some());
+        }
+        assert!(body.tumbler.expect("gate-held tumbler").shaking);
+    }
+
+    #[test]
+    fn ordinary_flying_uses_phone_gravity_without_a_shake() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        let work = env.monitors[0].work;
+        body.mode = MotionMode::Flying;
+        body.surface = None;
+        body.translate_world(
+            Vec2::new(
+                (work.left + work.right) as f32 * 0.5,
+                (work.top + work.bottom) as f32 * 0.5,
+            ) - body.center,
+        );
+        body.velocity = Vec2::ZERO;
+
+        body.apply_container_motion(
+            Vec2::ZERO,
+            -Vec2::X * TUMBLER_STANDARD_GRAVITY,
+            0.0,
+            true,
+            true,
+            false,
+            false,
+        );
+        body.step(TEST_DT, &env);
+
+        assert!(body.velocity.x < -20.0, "vx={}", body.velocity.x);
+        assert!(body.velocity.y.abs() < 0.1, "vy={}", body.velocity.y);
+        assert!(body.tumbler.is_none());
+    }
+
+    #[test]
+    fn unavailable_sensor_disables_container_motion_and_keeps_default_gravity() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        let work = env.monitors[0].work;
+        body.mode = MotionMode::Flying;
+        body.surface = None;
+        body.translate_world(
+            Vec2::new(
+                (work.left + work.right) as f32 * 0.5,
+                (work.top + work.bottom) as f32 * 0.5,
+            ) - body.center,
+        );
+        body.velocity = Vec2::ZERO;
+
+        body.apply_container_motion(
+            Vec2::new(30.0, 0.0),
+            -Vec2::X * TUMBLER_STANDARD_GRAVITY,
+            1.0,
+            false,
+            false,
+            true,
+            true,
+        );
+        body.step(TEST_DT, &env);
+
+        assert!(body.velocity.x.abs() < 0.1, "vx={}", body.velocity.x);
+        assert!(body.velocity.y > 20.0, "vy={}", body.velocity.y);
+        assert!(body.tumbler.is_none());
+        assert!(body.sensor_gravity_world.is_none());
+    }
+
+    #[test]
+    fn invalidated_gravity_reading_clears_the_previous_screen_axis() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        let work = env.monitors[0].work;
+        body.mode = MotionMode::Flying;
+        body.surface = None;
+        body.translate_world(
+            Vec2::new(
+                (work.left + work.right) as f32 * 0.5,
+                (work.top + work.bottom) as f32 * 0.5,
+            ) - body.center,
+        );
+        body.velocity = Vec2::ZERO;
+        body.apply_container_motion(
+            Vec2::ZERO,
+            -Vec2::X * TUMBLER_STANDARD_GRAVITY,
+            0.0,
+            true,
+            true,
+            false,
+            false,
+        );
+        body.apply_container_motion(Vec2::ZERO, Vec2::ZERO, 0.0, true, false, false, false);
+
+        body.step(TEST_DT, &env);
+
+        assert!(body.velocity.x.abs() < 0.1, "vx={}", body.velocity.x);
+        assert!(body.velocity.y > 20.0, "vy={}", body.velocity.y);
+        assert!(body.sensor_gravity_world.is_none());
+    }
+
+    #[test]
+    fn active_tumbler_falls_toward_the_phone_gravity_projection() {
+        let env = test_environment();
+        let base = centered_tumbler(&env);
+        let mut left = base.clone();
+        let mut right = base;
+
+        for _ in 0..12 {
+            left.apply_container_motion(
+                Vec2::ZERO,
+                -Vec2::X * TUMBLER_STANDARD_GRAVITY,
+                0.0,
+                true,
+                true,
+                false,
+                true,
+            );
+            right.apply_container_motion(
+                Vec2::ZERO,
+                Vec2::X * TUMBLER_STANDARD_GRAVITY,
+                0.0,
+                true,
+                true,
+                false,
+                true,
+            );
+            left.step(TEST_DT, &env);
+            right.step(TEST_DT, &env);
+        }
+
+        assert!(left.velocity.x < -300.0, "left vx={}", left.velocity.x);
+        assert!(right.velocity.x > 300.0, "right vx={}", right.velocity.x);
+        assert!((left.velocity.x + right.velocity.x).abs() < 0.1);
+        assert!(left.velocity.y.abs() < 0.1 && right.velocity.y.abs() < 0.1);
+    }
+
+    #[test]
+    fn active_tumbler_preserves_projected_gravity_strength() {
+        let env = test_environment();
+        let base = centered_tumbler(&env);
+        let mut full = base.clone();
+        let mut half = base;
+        let half_gravity = TUMBLER_STANDARD_GRAVITY * 0.5;
+
+        for _ in 0..12 {
+            full.apply_container_motion(
+                Vec2::ZERO,
+                Vec2::X * TUMBLER_STANDARD_GRAVITY,
+                0.0,
+                true,
+                true,
+                false,
+                true,
+            );
+            half.apply_container_motion(Vec2::ZERO, Vec2::X * half_gravity, 0.0, true, true, false, true);
+            full.step(TEST_DT, &env);
+            half.step(TEST_DT, &env);
+        }
+
+        let expected_ratio = (half_gravity - TUMBLER_GRAVITY_DEAD_ZONE)
+            / (TUMBLER_STANDARD_GRAVITY - TUMBLER_GRAVITY_DEAD_ZONE);
+        let actual_ratio = half.velocity.x / full.velocity.x;
+        assert!(
+            (actual_ratio - expected_ratio).abs() < 0.01,
+            "ratio={actual_ratio}"
+        );
+    }
+
+    #[test]
+    fn flat_phone_does_not_invent_a_screen_down_gravity() {
+        let env = test_environment();
+        let mut body = centered_tumbler(&env);
+        let start = body.center;
+
+        for _ in 0..12 {
+            body.apply_container_motion(Vec2::ZERO, Vec2::ZERO, 0.0, true, true, false, true);
+            body.step(TEST_DT, &env);
+        }
+
+        assert_eq!(body.velocity, Vec2::ZERO);
+        assert!((body.center - start).length() < 0.001);
+    }
+
+    #[test]
+    fn gravity_direction_updates_continuously_after_shaking_stops() {
+        let env = test_environment();
+        let mut body = centered_tumbler(&env);
+
+        for _ in 0..6 {
+            body.apply_container_motion(
+                Vec2::ZERO,
+                Vec2::X * TUMBLER_STANDARD_GRAVITY,
+                0.0,
+                true,
+                true,
+                false,
+                false,
+            );
+            body.step(TEST_DT, &env);
+        }
+        assert!(body.velocity.x > 140.0);
+
+        for _ in 0..12 {
+            body.apply_container_motion(
+                Vec2::ZERO,
+                -Vec2::X * TUMBLER_STANDARD_GRAVITY,
+                0.0,
+                true,
+                true,
+                false,
+                false,
+            );
+            body.step(TEST_DT, &env);
+        }
+        assert!(body.velocity.x < -140.0, "vx={}", body.velocity.x);
+    }
+
+    #[test]
+    fn stored_gravity_does_not_expire_between_render_frames() {
+        let env = test_environment();
+        let mut body = centered_tumbler(&env);
+        body.apply_container_motion(
+            Vec2::ZERO,
+            -Vec2::X * TUMBLER_STANDARD_GRAVITY,
+            0.0,
+            true,
+            true,
+            false,
+            false,
+        );
+
+        for _ in 0..4 {
+            body.step(0.035, &env);
+        }
+
+        assert!(body.velocity.x < -200.0, "vx={}", body.velocity.x);
+        assert!(body.velocity.y.abs() < 0.1, "vy={}", body.velocity.y);
+    }
+
+    #[test]
+    fn corner_settle_keeps_rotating_content_away_from_tangent_edges() {
+        let env = test_environment();
+        let work = env.monitors[0].work;
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        let (left_extent, top_extent, _, _) = body.tumbler_extents();
+        let target = Vec2::new(
+            work.left as f32 + left_extent + 1.0,
+            work.top as f32 + top_extent + 1.0,
+        );
+        body.translate_world(target - body.center);
+        let diagonal_gravity = Vec2::new(-1.0, -1.0).normalized_or(-Vec2::Y) * TUMBLER_STANDARD_GRAVITY;
+        body.apply_container_motion(Vec2::ZERO, diagonal_gravity, 0.0, true, true, false, false);
+        body.velocity = Vec2::new(-80.0, -80.0);
+
+        body.step(TEST_DT, &env);
+
+        assert_eq!(
+            body.mode,
+            MotionMode::Attached,
+            "velocity={:?} center={:?}",
+            body.velocity,
+            body.center
+        );
+        let contact = body.surface.expect("settled contact");
+        body.velocity = Vec2::ZERO;
+        body.idle_timer = 2.0;
+        for _ in 0..16 {
+            body.step(TEST_DT, &env);
+            let bounds = body.content_bounds();
+            match contact.kind {
+                SurfaceKind::Bottom | SurfaceKind::Top => {
+                    assert!(bounds.left >= work.left as f32 - 0.05, "left={}", bounds.left);
+                    assert!(bounds.right <= work.right as f32 + 0.05, "right={}", bounds.right);
+                }
+                SurfaceKind::Left | SurfaceKind::Right => {
+                    assert!(bounds.top >= work.top as f32 - 0.05, "top={}", bounds.top);
+                    assert!(
+                        bounds.bottom <= work.bottom as f32 + 0.05,
+                        "bottom={}",
+                        bounds.bottom
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_trigger_adds_another_bounded_impulse() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        let velocity_before = body.velocity;
+
+        trigger_tumbler(&mut body);
+
+        assert_ne!(body.velocity, velocity_before);
+        assert!(body.tumbler.expect("retriggered").shaking);
+        assert_eq!(body.mode, MotionMode::Flying);
+        assert!(body.velocity.length() <= MAX_THROW_VELOCITY + 0.001);
+    }
+
+    #[test]
+    fn tumbler_eventually_settles_and_stays_inside_work_area() {
+        let env = test_environment();
+        let work = env.monitors[0].work;
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        body.apply_container_motion(
+            Vec2::ZERO,
+            Vec2::Y * TUMBLER_STANDARD_GRAVITY,
+            0.0,
+            true,
+            true,
+            false,
+            false,
+        );
+
+        for _ in 0..(60 * 5) {
+            body.step(TEST_DT, &env);
+            assert!(body.center.x.is_finite() && body.center.y.is_finite());
+            assert!(body.velocity.x.is_finite() && body.velocity.y.is_finite());
+            assert!(body.bank.is_finite() && body.bank_velocity.is_finite());
+            if body.tumbler.is_some() {
+                let bounds = body.tumbler_collision_bounds();
+                assert!(bounds.left >= work.left as f32 - 0.05, "left={}", bounds.left);
+                assert!(bounds.top >= work.top as f32 - 0.05, "top={}", bounds.top);
+                assert!(bounds.right <= work.right as f32 + 0.05, "right={}", bounds.right);
+                assert!(
+                    bounds.bottom <= work.bottom as f32 + 0.05,
+                    "bottom={}",
+                    bounds.bottom
+                );
+            }
+            if body.mode == MotionMode::Attached {
+                break;
+            }
+        }
+
+        assert_eq!(
+            body.mode,
+            MotionMode::Attached,
+            "velocity={:?} center={:?}",
+            body.velocity,
+            body.center
+        );
+        assert!(body.surface.is_some());
+        assert!(body.tumbler.is_none());
+    }
+
+    #[test]
+    fn flat_phone_bounce_also_settles_on_an_actual_wall() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        trigger_tumbler(&mut body);
+        body.apply_container_motion(Vec2::ZERO, Vec2::ZERO, 0.0, true, true, false, false);
+
+        for _ in 0..(60 * 5) {
+            body.step(TEST_DT, &env);
+            if body.mode == MotionMode::Attached {
+                break;
+            }
+        }
+
+        assert_eq!(
+            body.mode,
+            MotionMode::Attached,
+            "velocity={:?} center={:?}",
+            body.velocity,
+            body.center
+        );
+        assert!(body.surface.is_some());
+        assert!(body.tumbler.is_none());
+    }
+
+    #[test]
+    fn invalid_and_extreme_container_input_remains_finite_and_bounded() {
+        let env = test_environment();
+        let mut body = FushiBody::new(&env);
+        body.apply_container_motion(
+            Vec2::new(f32::NAN, f32::INFINITY),
+            Vec2::new(f32::NEG_INFINITY, f32::NAN),
+            f32::NAN,
+            true,
+            true,
+            true,
+            true,
+        );
+        body.apply_container_motion(
+            Vec2::new(f32::MAX, -f32::MAX),
+            Vec2::new(f32::MAX, f32::MAX),
+            1.0,
+            true,
+            true,
+            true,
+            true,
+        );
+
+        for _ in 0..180 {
+            body.step(TEST_DT, &env);
+            assert!(body.center.x.is_finite() && body.center.y.is_finite());
+            assert!(body.velocity.x.is_finite() && body.velocity.y.is_finite());
+            assert!(body.velocity.length() <= MAX_THROW_VELOCITY + 0.01);
+            assert!(body.bank.is_finite() && body.bank_velocity.is_finite());
         }
     }
 }

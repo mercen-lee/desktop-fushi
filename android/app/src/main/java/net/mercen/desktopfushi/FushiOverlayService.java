@@ -12,6 +12,10 @@ import android.content.pm.ServiceInfo;
 import android.graphics.Insets;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.provider.Settings;
@@ -19,11 +23,12 @@ import android.util.DisplayMetrics;
 import android.view.Choreographer;
 import android.view.Display;
 import android.view.Gravity;
+import android.view.Surface;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.WindowMetrics;
 
-public final class FushiOverlayService extends Service {
+public final class FushiOverlayService extends Service implements SensorEventListener {
     public static final String ACTION_START = "net.mercen.desktopfushi.START";
     public static final String ACTION_STOP = "net.mercen.desktopfushi.STOP";
     public static final String ACTION_STATE_CHANGED = "net.mercen.desktopfushi.STATE_CHANGED";
@@ -33,6 +38,7 @@ public final class FushiOverlayService extends Service {
     private static final String CHANNEL_ID = "desktop_fushi_overlay";
     private static final int NOTIFICATION_ID = 3118;
     private static final int MIN_WINDOW_PX = 96;
+    private static final long MOTION_DISCONTINUITY_NS = 250_000_000L;
     private static volatile boolean running;
     private static final class DisplayGeometry {
         final int width;
@@ -69,13 +75,19 @@ public final class FushiOverlayService extends Service {
     private WindowManager windowManager;
     private WindowManager.LayoutParams layoutParams;
     private FushiOverlayView overlayView;
+    private SensorManager sensorManager;
     private Choreographer choreographer;
+    private boolean sensorsRegistered;
+    private boolean rawAccelerometerFallback;
+    private int motionSensorMode = FushiOverlayView.MOTION_SENSOR_MODE_NONE;
     private boolean framePosted;
+    private int lastDisplayRotation = -1;
     private long lastFrameNs;
 
     @Override public void onCreate() {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         choreographer = Choreographer.getInstance();
         FushiSettings.preferences(this).registerOnSharedPreferenceChangeListener(settingsListener);
         createNotificationChannel();
@@ -85,11 +97,13 @@ public final class FushiOverlayService extends Service {
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
             setRunningState(false);
+            unregisterSensors();
             stopSelf();
             return START_NOT_STICKY;
         }
         if (!canDrawOverlay()) {
             setRunningState(false);
+            unregisterSensors();
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -101,8 +115,10 @@ public final class FushiOverlayService extends Service {
             if (startedFromBoot) startForegroundCompat();
             showOverlayIfNeeded();
             if (!startedFromBoot) startForegroundCompat();
+            registerSensors();
         } catch (RuntimeException error) {
             setRunningState(false);
+            unregisterSensors();
             stopForeground(true);
             stopSelf();
             return START_NOT_STICKY;
@@ -114,6 +130,7 @@ public final class FushiOverlayService extends Service {
     @Override public void onDestroy() {
         setRunningState(false);
         FushiSettings.preferences(this).unregisterOnSharedPreferenceChangeListener(settingsListener);
+        unregisterSensors();
         removeFrameCallback();
         removeOverlayView();
         super.onDestroy();
@@ -124,6 +141,48 @@ public final class FushiOverlayService extends Service {
     public static boolean isRunning() {
         return running;
     }
+
+    @Override public void onSensorChanged(SensorEvent event) {
+        FushiOverlayView view = overlayView;
+        if (!sensorsRegistered || view == null || event == null || event.sensor == null) return;
+
+        int sensorType = event.sensor.getType();
+        if (rawAccelerometerFallback
+                ? sensorType != Sensor.TYPE_ACCELEROMETER
+                : sensorType != Sensor.TYPE_LINEAR_ACCELERATION
+                        && sensorType != Sensor.TYPE_GRAVITY) {
+            // A callback queued before a partial pair registration was rolled back must not
+            // contaminate the raw-accelerometer stream (or vice versa).
+            return;
+        }
+
+        int sensorKind;
+        switch (sensorType) {
+            case Sensor.TYPE_LINEAR_ACCELERATION:
+                sensorKind = FushiOverlayView.MOTION_SENSOR_LINEAR_ACCELERATION;
+                break;
+            case Sensor.TYPE_GRAVITY:
+                sensorKind = FushiOverlayView.MOTION_SENSOR_GRAVITY;
+                break;
+            case Sensor.TYPE_ACCELEROMETER:
+                sensorKind = FushiOverlayView.MOTION_SENSOR_RAW_ACCELEROMETER;
+                break;
+            default:
+                return;
+        }
+
+        int rotation = displayRotation();
+        if (rotation != lastDisplayRotation) {
+            lastDisplayRotation = rotation;
+            view.resetMotion();
+        }
+        float x = event.values.length > 0 ? event.values[0] : 0f;
+        float y = event.values.length > 1 ? event.values[1] : 0f;
+        float z = event.values.length > 2 ? event.values[2] : 0f;
+        view.motionSample(sensorKind, x, y, z, event.timestamp, rotation);
+    }
+
+    @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
     private void setRunningState(boolean value) {
         running = value;
@@ -137,6 +196,16 @@ public final class FushiOverlayService extends Service {
         framePosted = false;
         if (overlayView == null || layoutParams == null || windowManager == null) return;
 
+        int rotation = displayRotation();
+        if (rotation != lastDisplayRotation) {
+            lastDisplayRotation = rotation;
+            overlayView.resetMotion();
+        }
+        if (lastFrameNs != 0L
+                && frameTimeNanos - lastFrameNs > MOTION_DISCONTINUITY_NS) {
+            // Do not replay a confirmed impulse after screen-off or a long UI/frame pause.
+            overlayView.resetMotion();
+        }
         float dt = lastFrameNs == 0L
                 ? 1f / 60f
                 : clamp((frameTimeNanos - lastFrameNs) / 1_000_000_000f, 0.001f, 0.050f);
@@ -187,6 +256,7 @@ public final class FushiOverlayService extends Service {
                 this,
                 FushiSettings.graphicsBackend(this),
                 FushiSettings.sizePreset(this));
+        overlayView.setMotionSensorMode(motionSensorMode);
         Display.Mode preferredMode = preferredDisplayMode();
         if (preferredMode != null) {
             overlayView.setPreferredFrameRate(preferredMode.getRefreshRate());
@@ -203,6 +273,7 @@ public final class FushiOverlayService extends Service {
                 geometry.workTop,
                 geometry.workRight,
                 geometry.workBottom);
+        overlayView.resetMotion();
 
         layoutParams = new WindowManager.LayoutParams(
                 Math.max(MIN_WINDOW_PX, Math.round(overlayView.getWindowWidth())),
@@ -245,6 +316,7 @@ public final class FushiOverlayService extends Service {
         if (view == null) return;
 
         // Drop the wgpu surface while SurfaceHolder is still valid.
+        view.resetMotion();
         view.destroyNative();
         if (windowManager != null) {
             try {
@@ -256,6 +328,75 @@ public final class FushiOverlayService extends Service {
 
     private boolean canDrawOverlay() {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this);
+    }
+
+    private void registerSensors() {
+        if (sensorsRegistered || sensorManager == null || overlayView == null) return;
+
+        setMotionSensorMode(FushiOverlayView.MOTION_SENSOR_MODE_NONE);
+        overlayView.resetMotion();
+        lastDisplayRotation = displayRotation();
+
+        Sensor linear = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+        Sensor gravity = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
+        if (linear != null && gravity != null) {
+            boolean linearRegistered = sensorManager.registerListener(
+                    this, linear, SensorManager.SENSOR_DELAY_GAME);
+            boolean gravityRegistered = sensorManager.registerListener(
+                    this, gravity, SensorManager.SENSOR_DELAY_GAME);
+            if (linearRegistered && gravityRegistered) {
+                rawAccelerometerFallback = false;
+                setMotionSensorMode(FushiOverlayView.MOTION_SENSOR_MODE_DIRECT_PAIR);
+                sensorsRegistered = true;
+                return;
+            }
+            // Do not mix a partial software-sensor stream with raw acceleration. Rust owns one
+            // coherent filtering path at a time.
+            sensorManager.unregisterListener(this);
+        }
+
+        Sensor accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        if (accelerometer != null) {
+            boolean registered = sensorManager.registerListener(
+                    this, accelerometer, SensorManager.SENSOR_DELAY_GAME);
+            if (registered) {
+                rawAccelerometerFallback = true;
+                setMotionSensorMode(FushiOverlayView.MOTION_SENSOR_MODE_RAW_ACCELEROMETER);
+                sensorsRegistered = true;
+            }
+        }
+    }
+
+    private void unregisterSensors() {
+        if (sensorManager != null) {
+            // Also clears a partial two-sensor registration if registration failed midway.
+            sensorManager.unregisterListener(this);
+        }
+        sensorsRegistered = false;
+        rawAccelerometerFallback = false;
+        setMotionSensorMode(FushiOverlayView.MOTION_SENSOR_MODE_NONE);
+        lastDisplayRotation = -1;
+        if (overlayView != null) overlayView.resetMotion();
+    }
+
+    private void setMotionSensorMode(int mode) {
+        motionSensorMode = mode;
+        if (overlayView != null) overlayView.setMotionSensorMode(mode);
+    }
+
+    private int displayRotation() {
+        Display display = windowManager == null ? null : windowManager.getDefaultDisplay();
+        if (display == null) return Surface.ROTATION_0;
+        int rotation = display.getRotation();
+        switch (rotation) {
+            case Surface.ROTATION_90:
+            case Surface.ROTATION_180:
+            case Surface.ROTATION_270:
+                return rotation;
+            case Surface.ROTATION_0:
+            default:
+                return Surface.ROTATION_0;
+        }
     }
 
     private void startForegroundCompat() {

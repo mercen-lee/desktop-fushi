@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use crate::desktop::{DesktopEnvironment, SurfaceContact, SurfaceKind};
 use crate::fushi::constants::{HUGE_FUSHI_SCALE, LARGE_FUSHI_SCALE, NORMAL_FUSHI_SCALE, SMALL_FUSHI_SCALE};
+use crate::fushi::motion_input::{FrameMotion, MotionInput, SensorAvailability, SensorKind};
 use crate::fushi::render::FushiRenderer;
 use crate::fushi::{FushiBody, MotionMode};
 use crate::gpu_canvas::GpuCanvas;
@@ -301,7 +302,9 @@ enum WorkerSignal {
 pub struct AndroidFushiController {
     signal_tx: mpsc::Sender<WorkerSignal>,
     pending_frame: Arc<Mutex<PendingFrame>>,
+    motion_input: Arc<Mutex<MotionInput>>,
     frame_queued: Arc<AtomicBool>,
+    drag_active: AtomicBool,
     latest_layout: Arc<Mutex<[f32; 4]>>,
     worker: Option<JoinHandle<()>>,
 }
@@ -326,10 +329,14 @@ impl AndroidFushiController {
         let initial_layout = engine.layout();
         let (signal_tx, signal_rx) = mpsc::channel();
         let pending_frame = Arc::new(Mutex::new(PendingFrame::new(geometry)));
+        // Fail closed until Java confirms one coherent sensor path. This keeps devices without
+        // motion sensors on the original screen-down physics and rejects stale queued callbacks.
+        let motion_input = Arc::new(Mutex::new(MotionInput::new(SensorAvailability::none())));
         let frame_queued = Arc::new(AtomicBool::new(false));
         let latest_layout = Arc::new(Mutex::new(initial_layout));
 
         let worker_pending_frame = pending_frame.clone();
+        let worker_motion_input = motion_input.clone();
         let worker_frame_queued = frame_queued.clone();
         let worker_latest_layout = latest_layout.clone();
         let worker = thread::Builder::new()
@@ -340,6 +347,7 @@ impl AndroidFushiController {
                         engine,
                         signal_rx,
                         worker_pending_frame,
+                        worker_motion_input,
                         worker_frame_queued,
                         worker_latest_layout,
                     );
@@ -353,7 +361,9 @@ impl AndroidFushiController {
         Ok(Self {
             signal_tx,
             pending_frame,
+            motion_input,
             frame_queued,
+            drag_active: AtomicBool::new(false),
             latest_layout,
             worker: Some(worker),
         })
@@ -422,7 +432,7 @@ impl AndroidFushiController {
         {
             return false;
         }
-        match completed_rx.recv_timeout(DRAG_START_TIMEOUT) {
+        let started = match completed_rx.recv_timeout(DRAG_START_TIMEOUT) {
             Ok(started) => started,
             Err(mpsc::RecvTimeoutError::Disconnected) => false,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -435,19 +445,66 @@ impl AndroidFushiController {
                     completed_rx.recv().unwrap_or(false)
                 }
             }
+        };
+        if started {
+            self.drag_active.store(true, Ordering::Release);
+            self.reset_motion();
         }
+        started
     }
 
     fn pointer(&self, x: f32, y: f32, down: bool) {
+        if !down {
+            self.drag_active.store(false, Ordering::Release);
+            self.reset_motion();
+        }
         let _ = self.signal_tx.send(WorkerSignal::Pointer { x, y, down });
     }
 
     fn cancel_pointer(&self) {
+        self.drag_active.store(false, Ordering::Release);
+        self.reset_motion();
         let _ = self.signal_tx.send(WorkerSignal::CancelPointer);
     }
 
     fn hover(&self, x: f32, y: f32, inside: bool) {
         let _ = self.signal_tx.send(WorkerSignal::Hover { x, y, inside });
+    }
+
+    fn motion_sample(
+        &self,
+        sensor_kind: jint,
+        x: f32,
+        y: f32,
+        z: f32,
+        timestamp_ns: jlong,
+        display_rotation: jint,
+    ) {
+        if self.drag_active.load(Ordering::Acquire) {
+            return;
+        }
+        let sensor_kind = match sensor_kind {
+            1 => SensorKind::LinearAcceleration,
+            2 => SensorKind::Gravity,
+            3 => SensorKind::Accelerometer,
+            _ => return,
+        };
+        let rotation = display_rotation.clamp(0, 3) as u8;
+        let _ =
+            lock_unpoisoned(&self.motion_input).push_sample(sensor_kind, timestamp_ns, rotation, [x, y, z]);
+    }
+
+    fn reset_motion(&self) {
+        lock_unpoisoned(&self.motion_input).reset();
+    }
+
+    fn set_motion_sensor_mode(&self, mode: jint) {
+        let availability = match mode {
+            1 => SensorAvailability::direct_pair(),
+            2 => SensorAvailability::raw_accelerometer(),
+            _ => SensorAvailability::none(),
+        };
+        lock_unpoisoned(&self.motion_input).set_availability(availability);
     }
 
     fn request_frame(&self, dt: f32, geometry: AndroidDisplayGeometry) {
@@ -464,6 +521,8 @@ impl AndroidFushiController {
     }
 
     fn stop(&mut self) {
+        self.drag_active.store(false, Ordering::Release);
+        self.reset_motion();
         let Some(worker) = self.worker.take() else {
             return;
         };
@@ -491,6 +550,7 @@ fn run_render_worker(
     mut engine: AndroidFushiEngine,
     signal_rx: mpsc::Receiver<WorkerSignal>,
     pending_frame: Arc<Mutex<PendingFrame>>,
+    motion_input: Arc<Mutex<MotionInput>>,
     frame_queued: Arc<AtomicBool>,
     latest_layout: Arc<Mutex<[f32; 4]>>,
 ) {
@@ -534,7 +594,12 @@ fn run_render_worker(
                 frame_queued.store(false, Ordering::Release);
                 let frame = lock_unpoisoned(&pending_frame).take();
                 if let Some((dt, geometry)) = frame {
-                    let layout = engine.step(dt, geometry);
+                    let motion = {
+                        let mut input = lock_unpoisoned(&motion_input);
+                        input.advance_frame(dt);
+                        input.take_frame()
+                    };
+                    let layout = engine.step(dt, geometry, motion);
                     *lock_unpoisoned(&latest_layout) = layout;
                 }
             }
@@ -797,9 +862,18 @@ impl AndroidFushiEngine {
         });
     }
 
-    fn step(&mut self, dt: f32, geometry: AndroidDisplayGeometry) -> [f32; 4] {
+    fn step(&mut self, dt: f32, geometry: AndroidDisplayGeometry, motion: FrameMotion) -> [f32; 4] {
         self.set_display(geometry);
         let dt = dt.clamp(0.001, 0.12);
+        self.fushi.apply_container_motion(
+            motion.impulse,
+            motion.gravity,
+            motion.intensity,
+            motion.sensor_available,
+            motion.gravity_valid,
+            motion.triggered,
+            motion.gate_open,
+        );
         let step_count = ((dt / MAX_SIMULATION_STEP).ceil() as usize).clamp(1, 16);
         let simulation_step = dt / step_count as f32;
         for _ in 0..step_count {
@@ -1076,6 +1150,52 @@ pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeHover
     let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
         if let Some(controller) = controller_ref(ptr) {
             controller.hover(x, y, inside != 0);
+        }
+    }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeMotionSample(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    ptr: jlong,
+    sensor_kind: jint,
+    x: jfloat,
+    y: jfloat,
+    z: jfloat,
+    timestamp_ns: jlong,
+    display_rotation: jint,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        if let Some(controller) = controller_ref(ptr) {
+            controller.motion_sample(sensor_kind, x, y, z, timestamp_ns, display_rotation);
+        }
+    }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeResetMotion(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    ptr: jlong,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        if let Some(controller) = controller_ref(ptr) {
+            controller.reset_motion();
+        }
+    }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_net_mercen_desktopfushi_FushiOverlayView_nativeSetMotionSensorMode(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    ptr: jlong,
+    mode: jint,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+        if let Some(controller) = controller_ref(ptr) {
+            controller.set_motion_sensor_mode(mode);
         }
     }));
 }

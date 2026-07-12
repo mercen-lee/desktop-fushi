@@ -41,6 +41,16 @@ pub const FREE_GRAVITY: f32 = 1550.0;
 pub const THROW_VELOCITY_SCALE: f32 = 0.70;
 pub const MAX_THROW_VELOCITY: f32 = 2050.0;
 
+pub(crate) const TUMBLER_SHAKING_RESTITUTION: f32 = 0.78;
+pub(crate) const TUMBLER_SHAKING_TANGENT_RETENTION: f32 = 0.90;
+pub(crate) const TUMBLER_SENSOR_IMPULSE_SCALE: f32 = 105.0;
+pub(crate) const TUMBLER_INITIAL_IMPULSE_SCALE: f32 = 1100.0;
+pub(crate) const TUMBLER_MAX_SENSOR_IMPULSE: f32 = 2.0;
+pub(crate) const TUMBLER_STANDARD_GRAVITY: f32 = 9.80665;
+pub(crate) const TUMBLER_GRAVITY_DEAD_ZONE: f32 = 0.45;
+pub(crate) const TUMBLER_INITIAL_KICK_MIN: f32 = 240.0;
+pub(crate) const TUMBLER_INITIAL_KICK_MAX: f32 = 1500.0;
+
 pub const DRAG_CURSOR_FOLLOW_RESPONSE: f32 = 9.6;
 pub const DRAG_CURSOR_MAX_LAG: f32 = 112.0;
 pub const DRAG_ANCHOR_STIFFNESS: f32 = 15.8;

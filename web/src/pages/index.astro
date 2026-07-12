@@ -3,9 +3,9 @@ const version = import.meta.env.PUBLIC_DESKTOP_FUSHI_VERSION ?? "0.1.0";
 const tag = `v${version}`;
 const siteUrl = "https://desktopfushi.mercen.net";
 const canonicalUrl = `${siteUrl}/`;
-const pageTitle = "Desktop Fushi - Transparent Desktop Pet for Windows and macOS";
+const pageTitle = "Desktop Fushi - Desktop Pet for Windows, macOS, and Android";
 const pageDescription =
-  "Download Desktop Fushi, a tiny transparent desktop pet for Windows and macOS with interactive physics, expressions, and a GPU-rendered Fushi companion.";
+  "Download Desktop Fushi for Windows and macOS or Pocket Fushi for Android, with interactive physics, expressions, and a GPU-rendered Fushi companion.";
 const ogImagePath = "/desktop-fushi-og.png";
 const ogImageUrl = `${siteUrl}${ogImagePath}`;
 const oEmbedUrl = `${siteUrl}/oembed.json?url=${encodeURIComponent(canonicalUrl)}`;
@@ -41,6 +41,13 @@ const platforms = [
     icon: "apple",
     fileName: `desktop-fushi-v${version}-macos-universal.zip`,
   },
+  {
+    key: "android-universal",
+    label: "Pocket Fushi for Android",
+    meta: "Android 8.0 and newer",
+    icon: "android",
+    fileName: `pocket-fushi-v${version}-android-universal.apk`,
+  },
 ].map((platform) => ({
   ...platform,
   href: `${releaseBase}/${platform.fileName}`,
@@ -55,7 +62,7 @@ const structuredData = {
   url: canonicalUrl,
   image: ogImageUrl,
   applicationCategory: "EntertainmentApplication",
-  operatingSystem: "Windows, macOS",
+  operatingSystem: "Windows, macOS, Android",
   softwareVersion: version,
   isAccessibleForFree: true,
   license: `${repositoryUrl}/blob/main/LICENSE`,
@@ -182,6 +189,11 @@ const structuredData = {
                     {platform.icon === "apple" && (
                       <svg viewBox="0 0 24 24">
                         <path d="M16.8 13.1c0-2.2 1.8-3.2 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8s-1.8-.8-2.9-.8c-1.5 0-2.9.9-3.7 2.2-1.6 2.8-.4 6.9 1.1 9.1.8 1.1 1.7 2.3 2.9 2.3 1.1 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2.1-1.1 2.8-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.7-1-2.8-3.8ZM14.6 6.6c.6-.7 1-1.8.9-2.8-.9 0-2 .6-2.7 1.3-.6.7-1 1.7-.9 2.7 1 0 2-.5 2.7-1.2Z" />
+                      </svg>
+                    )}
+                    {platform.icon === "android" && (
+                      <svg viewBox="0 0 24 24">
+                        <path d="M17.5 15.3a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm-11 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm11.4-6 2-3.4a.4.4 0 0 0-.2-.6.4.4 0 0 0-.5.2L17.1 9A12.3 12.3 0 0 0 12 7.9c-1.9 0-3.6.4-5.1 1.1L4.8 5.5a.4.4 0 0 0-.5-.2.4.4 0 0 0-.2.6l2 3.4A10.8 10.8 0 0 0 0 18.8h24a10.8 10.8 0 0 0-6.1-9.5Z" />
                       </svg>
                     )}
                   </span>

@@ -26,6 +26,12 @@ public final class FushiOverlayView extends SurfaceView implements
     private static final int INVALID_POINTER_ID = -1;
     private static final String TAG = "FushiOverlayView";
     private static final float MIN_WINDOW_PX = 96.0f;
+    static final int MOTION_SENSOR_LINEAR_ACCELERATION = 1;
+    static final int MOTION_SENSOR_GRAVITY = 2;
+    static final int MOTION_SENSOR_RAW_ACCELEROMETER = 3;
+    static final int MOTION_SENSOR_MODE_NONE = 0;
+    static final int MOTION_SENSOR_MODE_DIRECT_PAIR = 1;
+    static final int MOTION_SENSOR_MODE_RAW_ACCELEROMETER = 2;
 
     private final float[] nativeLayout = new float[4];
     private int graphicsBackend;
@@ -55,6 +61,7 @@ public final class FushiOverlayView extends SurfaceView implements
     private int workRight;
     private int workBottom;
     private float preferredFrameRate;
+    private int motionSensorMode = MOTION_SENSOR_MODE_NONE;
 
     public FushiOverlayView(Context context, int graphicsBackend, int sizePreset) {
         super(context);
@@ -132,6 +139,38 @@ public final class FushiOverlayView extends SurfaceView implements
         }
     }
 
+    public void motionSample(
+            int sensorKind,
+            float x,
+            float y,
+            float z,
+            long timestampNs,
+            int displayRotation) {
+        if (nativeHandle != 0L) {
+            nativeMotionSample(
+                    nativeHandle,
+                    sensorKind,
+                    x,
+                    y,
+                    z,
+                    timestampNs,
+                    displayRotation);
+        }
+    }
+
+    public void resetMotion() {
+        if (nativeHandle != 0L) nativeResetMotion(nativeHandle);
+    }
+
+    public void setMotionSensorMode(int mode) {
+        if (mode != MOTION_SENSOR_MODE_DIRECT_PAIR
+                && mode != MOTION_SENSOR_MODE_RAW_ACCELEROMETER) {
+            mode = MOTION_SENSOR_MODE_NONE;
+        }
+        motionSensorMode = mode;
+        if (nativeHandle != 0L) nativeSetMotionSensorMode(nativeHandle, mode);
+    }
+
     public void step(
             float dt,
             int screenW,
@@ -188,6 +227,7 @@ public final class FushiOverlayView extends SurfaceView implements
                     tapCandidate = false;
                     return false;
                 }
+                nativeResetMotion(nativeHandle);
                 activePointerId = event.getPointerId(0);
                 downMs = SystemClock.uptimeMillis();
                 downRawX = rawX;
@@ -368,6 +408,7 @@ public final class FushiOverlayView extends SurfaceView implements
         if (nativeHandle == 0L) {
             Log.e(TAG, "nativeCreate failed for " + width + "x" + height);
         } else {
+            nativeSetMotionSensorMode(nativeHandle, motionSensorMode);
             Log.i(TAG, "nativeCreate ok for " + width + "x" + height
                     + " backend=" + graphicsBackend + " sizePreset=" + sizePreset);
         }
@@ -410,6 +451,16 @@ public final class FushiOverlayView extends SurfaceView implements
     private static native void nativePointer(long handle, float x, float y, boolean down);
     private static native void nativeCancelPointer(long handle);
     private static native void nativeHover(long handle, float x, float y, boolean inside);
+    private static native void nativeMotionSample(
+            long handle,
+            int sensorKind,
+            float x,
+            float y,
+            float z,
+            long timestampNs,
+            int displayRotation);
+    private static native void nativeResetMotion(long handle);
+    private static native void nativeSetMotionSensorMode(long handle, int mode);
     private static native void nativeStep(
             long handle,
             float dt,
